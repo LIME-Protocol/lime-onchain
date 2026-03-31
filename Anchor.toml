@@ -1,0 +1,21 @@
+[features]
+seeds = true
+skip-lint = false
+
+[toolchain]
+anchor_version = "0.32.1"
+
+[programs.localnet]
+lime_market = "7fWARazEH3S5r3xJaTd2hjKzpxSPHchzNtFKiYF1PRgM"
+lime_vault = "73C6Qi25C8owQGRKgrvfDkTXKLgyawSC5MXwAGHj7iMZ"
+lime_settlement = "3YMsnQEW4koSRwLJw1gUeyf6S53GxNFQWSGjRr3NMjeo"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "npm run test:anchor"

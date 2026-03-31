@@ -1,0 +1,14 @@
+[workspace]
+members = [
+  "programs/lime-market",
+  "programs/lime-vault",
+  "programs/lime-settlement",
+]
+resolver = "2"
+
+[workspace.dependencies]
+anchor-lang = "0.32.1"
+anchor-spl = "0.32.1"
+
+[profile.release]
+overflow-checks = true
