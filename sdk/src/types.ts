@@ -12,8 +12,8 @@ export interface WalletProvider {
 }
 
 export interface OnchainCollateral {
-  lockCollateral(marketId: string, amount: number): Promise<string>;
-  releaseCollateral(marketId: string): Promise<string>;
+  lockCollateral(marketId: string, amount: number, side?: PositionSide): Promise<string>;
+  releaseCollateral(marketId: string, amount: number): Promise<string>;
   getLockedBalance(marketId: string): Promise<number>;
   getTotalLocked(): Promise<number>;
 }
@@ -21,8 +21,11 @@ export interface OnchainCollateral {
 export interface OnchainSettlement {
   resolveMarket(marketId: string, observedValue: number): Promise<string>;
   claimPayout(marketId: string): Promise<string>;
+  refundIfInvalidated(marketId: string): Promise<string>;
   getPayoutStatus(marketId: string): Promise<"pending" | "claimable" | "claimed">;
 }
+
+export type PositionSide = "long" | "short";
 
 export interface SolanaConfig {
   network: "mainnet-beta" | "devnet" | "localnet";

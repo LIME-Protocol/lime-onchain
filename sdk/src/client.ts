@@ -1,12 +1,9 @@
 import { AnchorProvider, BN, Program } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import type { AnchorWalletLike, ProgramAddresses, SolanaConfig } from "./types.js";
-
-const emptyIdl = {
-  version: "0.1.0",
-  name: "lime_placeholder",
-  instructions: [],
-};
+import marketIdl from "../../target/idl/lime_market.json";
+import vaultIdl from "../../target/idl/lime_vault.json";
+import settlementIdl from "../../target/idl/lime_settlement.json";
 
 export class LimeClient {
   readonly provider: AnchorProvider;
@@ -31,15 +28,15 @@ export class LimeClient {
     };
 
     this.marketProgram = new Program(
-      { ...emptyIdl, address: this.addresses.marketProgramId.toBase58() } as any,
+      { ...(marketIdl as any), address: this.addresses.marketProgramId.toBase58() },
       this.provider,
     );
     this.vaultProgram = new Program(
-      { ...emptyIdl, address: this.addresses.vaultProgramId.toBase58() } as any,
+      { ...(vaultIdl as any), address: this.addresses.vaultProgramId.toBase58() },
       this.provider,
     );
     this.settlementProgram = new Program(
-      { ...emptyIdl, address: this.addresses.settlementProgramId.toBase58() } as any,
+      { ...(settlementIdl as any), address: this.addresses.settlementProgramId.toBase58() },
       this.provider,
     );
   }

@@ -22,6 +22,36 @@ pub mod lime_market {
         Ok(())
     }
 
+    pub fn update_protocol_admin(
+        ctx: Context<UpdateProtocolConfig>,
+        new_admin: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.admin.key() == ctx.accounts.protocol_config.admin,
+            MarketError::Unauthorized
+        );
+        ctx.accounts.protocol_config.admin = new_admin;
+        Ok(())
+    }
+
+    pub fn pause_protocol(ctx: Context<UpdateProtocolConfig>) -> Result<()> {
+        require!(
+            ctx.accounts.admin.key() == ctx.accounts.protocol_config.admin,
+            MarketError::Unauthorized
+        );
+        ctx.accounts.protocol_config.paused = true;
+        Ok(())
+    }
+
+    pub fn resume_protocol(ctx: Context<UpdateProtocolConfig>) -> Result<()> {
+        require!(
+            ctx.accounts.admin.key() == ctx.accounts.protocol_config.admin,
+            MarketError::Unauthorized
+        );
+        ctx.accounts.protocol_config.paused = false;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_market(
         ctx: Context<CreateMarket>,
@@ -39,7 +69,9 @@ pub mod lime_market {
             ctx.accounts.admin.key() == protocol.admin,
             MarketError::Unauthorized
         );
+        require!(resolution_ts > Clock::get()?.unix_timestamp, MarketError::InvalidResolutionTs);
         require!(lower_bound < upper_bound, MarketError::InvalidBounds);
+        require!(payoff_type == PayoffType::Linear, MarketError::UnsupportedPayoffType);
         require!(
             settlement_source.len() <= SETTLEMENT_SOURCE_MAX_LEN,
             MarketError::SettlementSourceTooLong
@@ -67,7 +99,12 @@ pub mod lime_market {
         Ok(())
     }
 
-    pub fn activate_market(ctx: Context<UpdateMarketStatus>) -> Result<()> {
+    pub fn activate_market(ctx: Context<AdminMarketAction>) -> Result<()> {
+        let protocol = &ctx.accounts.protocol_config;
+        require!(
+            ctx.accounts.admin.key() == protocol.admin,
+            MarketError::Unauthorized
+        );
         let market = &mut ctx.accounts.market;
         require!(
             market.status == MarketStatus::Preliminary,
@@ -156,6 +193,21 @@ pub mod lime_market {
         Ok(())
     }
 
+    pub fn mark_settled(ctx: Context<AdminMarketAction>) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+        let protocol = &ctx.accounts.protocol_config;
+        require!(
+            ctx.accounts.admin.key() == protocol.admin,
+            MarketError::Unauthorized
+        );
+        require!(
+            market.status == MarketStatus::Resolved || market.status == MarketStatus::Cancelled,
+            MarketError::InvalidStatusTransition
+        );
+        market.status = MarketStatus::Settled;
+        Ok(())
+    }
+
     pub fn cancel_market(ctx: Context<AdminMarketAction>) -> Result<()> {
         let market = &mut ctx.accounts.market;
         let protocol = &ctx.accounts.protocol_config;
@@ -164,16 +216,24 @@ pub mod lime_market {
             MarketError::Unauthorized
         );
         require!(
-            market.status != MarketStatus::Settled,
+            market.status != MarketStatus::Settled && market.status != MarketStatus::Resolved,
             MarketError::InvalidStatusTransition
         );
         market.status = MarketStatus::Cancelled;
         Ok(())
     }
 
-    pub fn increment_participants(ctx: Context<MarketPositionSync>) -> Result<()> {
+    pub fn increment_participants(ctx: Context<AdminMarketAction>) -> Result<()> {
+        let protocol = &ctx.accounts.protocol_config;
+        require!(
+            ctx.accounts.admin.key() == protocol.admin,
+            MarketError::Unauthorized
+        );
         let market = &mut ctx.accounts.market;
-        market.participant_count = market.participant_count.saturating_add(1);
+        market.participant_count = market
+            .participant_count
+            .checked_add(1)
+            .ok_or(MarketError::ParticipantOverflow)?;
         Ok(())
     }
 }
@@ -212,9 +272,11 @@ pub struct CreateMarket<'info> {
 }
 
 #[derive(Accounts)]
-pub struct UpdateMarketStatus<'info> {
+pub struct UpdateProtocolConfig<'info> {
     #[account(mut)]
-    pub market: Account<'info, Market>,
+    pub admin: Signer<'info>,
+    #[account(mut, seeds = [b"protocol"], bump = protocol_config.bump)]
+    pub protocol_config: Account<'info, ProtocolConfig>,
 }
 
 #[derive(Accounts)]
@@ -223,12 +285,6 @@ pub struct AdminMarketAction<'info> {
     pub admin: Signer<'info>,
     #[account(seeds = [b"protocol"], bump = protocol_config.bump)]
     pub protocol_config: Account<'info, ProtocolConfig>,
-    #[account(mut)]
-    pub market: Account<'info, Market>,
-}
-
-#[derive(Accounts)]
-pub struct MarketPositionSync<'info> {
     #[account(mut)]
     pub market: Account<'info, Market>,
 }
@@ -303,4 +359,10 @@ pub enum MarketError {
     InsufficientParticipants,
     #[msg("Fee bps must be <= 10_000")]
     InvalidFeeBps,
+    #[msg("Resolution timestamp must be in the future")]
+    InvalidResolutionTs,
+    #[msg("Only linear payoff type is supported for MVP")]
+    UnsupportedPayoffType,
+    #[msg("Participant count overflow")]
+    ParticipantOverflow,
 }
