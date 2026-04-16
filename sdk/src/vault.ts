@@ -1,17 +1,50 @@
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { BN } from "@coral-xyz/anchor";
+import { PublicKey } from "@solana/web3.js";
 import type { LimeClient } from "./client.js";
-import { positionPda, vaultPda } from "./pda.js";
-import type { OnchainCollateral } from "./types.js";
+import { marketPda, positionPda, vaultAuthorityPda, vaultPda } from "./pda.js";
+import type { OnchainCollateral, PositionSide } from "./types.js";
 
 const SCALE = 1_000_000;
 
 export class SolanaCollateral implements OnchainCollateral {
   constructor(private readonly client: LimeClient) {}
 
-  async lockCollateral(marketId: string, amount: number): Promise<string> {
+  async initMarketVault(
+    marketId: string,
+    vaultTokenAccount: string,
+  ): Promise<string> {
     const marketIdBigInt = BigInt(marketId);
     const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
+    const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
+    const [settlementAuthority] = vaultAuthorityPda(
+      this.client.addresses.settlementProgramId,
+      marketIdBigInt,
+    );
+
+    return this.client.vaultProgram.methods
+      .initMarketVault(
+        new BN(marketId),
+        settlementAuthority,
+      )
+      .accounts({
+        payer: this.client.provider.wallet.publicKey,
+        usdcMint: this.client.addresses.usdcMint,
+        market,
+        marketVault,
+        vaultTokenAccount: new PublicKey(vaultTokenAccount),
+      })
+      .rpc();
+  }
+
+  async lockCollateral(
+    marketId: string,
+    amount: number,
+    side: PositionSide = "long",
+  ): Promise<string> {
+    const marketIdBigInt = BigInt(marketId);
+    const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
+    const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
     const [userPosition] = positionPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
@@ -22,44 +55,45 @@ export class SolanaCollateral implements OnchainCollateral {
       this.client.provider.wallet.publicKey,
     );
 
-    const quantity = BigInt(Math.floor(amount * SCALE));
+    const amountUnits = BigInt(Math.round(amount * SCALE));
+    const vaultAccount = await (this.client.vaultProgram as any).account.marketVault.fetch(
+      marketVault,
+    );
+
     return this.client.vaultProgram.methods
       .depositCollateral(
         new BN(marketId),
-        { long: {} },
-        new BN(quantity.toString()),
+        side === "short" ? { short: {} } : { long: {} },
+        new BN(amountUnits.toString()),
       )
       .accounts({
         user: this.client.provider.wallet.publicKey,
         usdcMint: this.client.addresses.usdcMint,
+        market,
         userAta,
         marketVault,
-        vaultTokenAccount: marketVault,
+        vaultTokenAccount: vaultAccount.vaultTokenAccount,
         userPosition,
       })
       .rpc();
   }
 
-  async releaseCollateral(marketId: string): Promise<string> {
+  async releaseCollateral(marketId: string, amount: number): Promise<string> {
     const marketIdBigInt = BigInt(marketId);
     const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
+    const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
     const [userPosition] = positionPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
     );
-    const userAta = getAssociatedTokenAddressSync(
-      this.client.addresses.usdcMint,
-      this.client.provider.wallet.publicKey,
-    );
+    const amountUnits = BigInt(Math.round(amount * SCALE));
     return this.client.vaultProgram.methods
-      .withdrawCollateral(new BN(0))
+      .withdrawCollateral(new BN(amountUnits.toString()))
       .accounts({
         user: this.client.provider.wallet.publicKey,
-        usdcMint: this.client.addresses.usdcMint,
-        userAta,
+        market,
         marketVault,
-        vaultTokenAccount: marketVault,
         userPosition,
       })
       .rpc();

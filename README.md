@@ -14,6 +14,7 @@ Solana on-chain layer for LIME's capped continuous payoff markets.
 - Matching remains off-chain
 - Collateral, positions, resolution and payout are on-chain
 - Fully collateralized contracts with bounded payoff in `[L, U]`
+- MVP supports `linear` payoff only
 
 ## Quick start
 
@@ -27,13 +28,17 @@ Solana on-chain layer for LIME's capped continuous payoff markets.
 3. Build programs:
    - `anchor build`
 4. Run tests:
-   - `anchor test`
+   - `npm run test:anchor`
+5. Build SDK:
+   - `npm run build:sdk`
+6. Bootstrap devnet deployment + smoke market:
+   - `npm run bootstrap:devnet`
 
 ## Program layout
 
-- `programs/lime-market`: create/activate/pause/close/cancel markets
-- `programs/lime-vault`: lock/release collateral and settle trade accounting
-- `programs/lime-settlement`: submit resolution, calculate claims, claim payout
+- `programs/lime-market`: protocol admin + market lifecycle
+- `programs/lime-vault`: collateral lock + position accounting
+- `programs/lime-settlement`: authorized resolution + claim/refund
 
 ## SDK
 
@@ -45,3 +50,12 @@ Solana on-chain layer for LIME's capped continuous payoff markets.
 - `SolanaSettlement`
 
 These interfaces map to the frontend abstractions in `lime-mvp/src/services/wallet.ts`.
+
+## Devnet runbook
+
+1. Set wallet and RPC if needed:
+   - `export SOLANA_KEYPAIR=~/.config/solana/id.json`
+   - `export SOLANA_RPC_URL=https://api.devnet.solana.com`
+2. Run bootstrap:
+   - `npm run bootstrap:devnet`
+3. Copy the printed `VITE_...` vars to `lime-mvp/.env`.
