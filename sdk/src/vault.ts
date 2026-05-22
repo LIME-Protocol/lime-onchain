@@ -2,12 +2,24 @@ import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import type { LimeClient } from "./client.js";
-import { marketPda, positionPda, vaultAuthorityPda, vaultPda } from "./pda.js";
-import type { OnchainCollateral, PositionSide } from "./types.js";
+import {
+  collateralPda,
+  marketPda,
+  positionPda,
+  vaultAuthorityPda,
+  vaultPda,
+  vaultTokenAuthorityPda,
+} from "./pda.js";
+import type {
+  OnchainCollateral,
+  OnchainTradeExecution,
+  PositionSide,
+  TradeExecutionInput,
+} from "./types.js";
 
 const SCALE = 1_000_000;
 
-export class SolanaCollateral implements OnchainCollateral {
+export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecution {
   constructor(private readonly client: LimeClient) {}
 
   async initMarketVault(
@@ -17,6 +29,10 @@ export class SolanaCollateral implements OnchainCollateral {
     const marketIdBigInt = BigInt(marketId);
     const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
+    const [vaultAuthority] = vaultTokenAuthorityPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+    );
     const [settlementAuthority] = vaultAuthorityPda(
       this.client.addresses.settlementProgramId,
       marketIdBigInt,
@@ -31,6 +47,7 @@ export class SolanaCollateral implements OnchainCollateral {
         payer: this.client.provider.wallet.publicKey,
         usdcMint: this.client.addresses.usdcMint,
         market,
+        vaultAuthority,
         marketVault,
         vaultTokenAccount: new PublicKey(vaultTokenAccount),
       })
@@ -40,12 +57,19 @@ export class SolanaCollateral implements OnchainCollateral {
   async lockCollateral(
     marketId: string,
     amount: number,
-    side: PositionSide = "long",
+    _side: PositionSide = "long",
+  ): Promise<string> {
+    return this.depositCollateral(marketId, amount);
+  }
+
+  async depositCollateral(
+    marketId: string,
+    amount: number,
   ): Promise<string> {
     const marketIdBigInt = BigInt(marketId);
     const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
-    const [userPosition] = positionPda(
+    const [userCollateral] = collateralPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
@@ -63,7 +87,6 @@ export class SolanaCollateral implements OnchainCollateral {
     return this.client.vaultProgram.methods
       .depositCollateral(
         new BN(marketId),
-        side === "short" ? { short: {} } : { long: {} },
         new BN(amountUnits.toString()),
       )
       .accounts({
@@ -73,47 +96,120 @@ export class SolanaCollateral implements OnchainCollateral {
         userAta,
         marketVault,
         vaultTokenAccount: vaultAccount.vaultTokenAccount,
-        userPosition,
+        userCollateral,
       })
       .rpc();
   }
 
   async releaseCollateral(marketId: string, amount: number): Promise<string> {
+    return this.withdrawAvailableCollateral(marketId, amount);
+  }
+
+  async withdrawAvailableCollateral(marketId: string, amount: number): Promise<string> {
     const marketIdBigInt = BigInt(marketId);
     const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
-    const [userPosition] = positionPda(
+    const [vaultAuthority] = vaultTokenAuthorityPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+    );
+    const [userCollateral] = collateralPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
     );
+    const userAta = getAssociatedTokenAddressSync(
+      this.client.addresses.usdcMint,
+      this.client.provider.wallet.publicKey,
+    );
     const amountUnits = BigInt(Math.round(amount * SCALE));
+    const vaultAccount = await (this.client.vaultProgram as any).account.marketVault.fetch(
+      marketVault,
+    );
+
     return this.client.vaultProgram.methods
-      .withdrawCollateral(new BN(amountUnits.toString()))
+      .withdrawAvailableCollateral(
+        new BN(marketId),
+        new BN(amountUnits.toString()),
+      )
       .accounts({
         user: this.client.provider.wallet.publicKey,
+        usdcMint: this.client.addresses.usdcMint,
         market,
         marketVault,
-        userPosition,
+        vaultAuthority,
+        vaultTokenAccount: vaultAccount.vaultTokenAccount,
+        userAta,
+        userCollateral,
+      })
+      .rpc();
+  }
+
+  async settleTrade(input: TradeExecutionInput): Promise<string> {
+    const marketIdBigInt = BigInt(input.marketId);
+    const buyer = new PublicKey(input.buyer);
+    const seller = new PublicKey(input.seller);
+    const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
+    const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
+    const [buyerCollateral] = collateralPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+      buyer,
+    );
+    const [sellerCollateral] = collateralPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+      seller,
+    );
+    const [buyerPosition] = positionPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+      buyer,
+      "long",
+    );
+    const [sellerPosition] = positionPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+      seller,
+      "short",
+    );
+    const quantityUnits = BigInt(Math.round(input.quantity * SCALE));
+
+    return this.client.vaultProgram.methods
+      .settleTrade(
+        new BN(input.marketId),
+        buyer,
+        seller,
+        new BN(quantityUnits.toString()),
+        new BN(Math.floor(input.priceScaled).toString()),
+      )
+      .accounts({
+        backendSigner: this.client.provider.wallet.publicKey,
+        market,
+        marketVault,
+        buyerCollateral,
+        sellerCollateral,
+        buyerPosition,
+        sellerPosition,
       })
       .rpc();
   }
 
   async getLockedBalance(marketId: string): Promise<number> {
-    const [userPosition] = positionPda(
+    const [userCollateral] = collateralPda(
       this.client.addresses.vaultProgramId,
       BigInt(marketId),
       this.client.provider.wallet.publicKey,
     );
-    const account = await (this.client.vaultProgram as any).account.userPosition.fetchNullable(
-      userPosition,
+    const account = await (this.client.vaultProgram as any).account.userCollateral.fetchNullable(
+      userCollateral,
     );
     if (!account) return 0;
-    return Number(account.collateralLocked) / SCALE;
+    return Number(account.totalDeposited) / SCALE;
   }
 
   async getTotalLocked(): Promise<number> {
-    const accounts = await (this.client.vaultProgram as any).account.userPosition.all([
+    const accounts = await (this.client.vaultProgram as any).account.userCollateral.all([
       {
         memcmp: {
           offset: 16,
@@ -123,8 +219,8 @@ export class SolanaCollateral implements OnchainCollateral {
     ]);
     return (
       accounts.reduce(
-        (acc: number, row: { account: { collateralLocked: number | bigint } }) =>
-          acc + Number(row.account.collateralLocked),
+        (acc: number, row: { account: { totalDeposited: number | bigint } }) =>
+          acc + Number(row.account.totalDeposited),
         0,
       ) / SCALE
     );

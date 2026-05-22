@@ -11,8 +11,9 @@ import {
   resolutionPda,
   vaultPda,
   vaultAuthorityPda,
+  vaultTokenAuthorityPda,
 } from "./pda.js";
-import type { OnchainSettlement } from "./types.js";
+import type { OnchainSettlement, PositionSide } from "./types.js";
 
 export class SolanaSettlement implements OnchainSettlement {
   constructor(private readonly client: LimeClient) {}
@@ -69,19 +70,23 @@ export class SolanaSettlement implements OnchainSettlement {
       .rpc();
   }
 
-  async claimPayout(marketId: string): Promise<string> {
+  async claimPayout(marketId: string, side: PositionSide = "long"): Promise<string> {
     const marketIdBigInt = BigInt(marketId);
     const [resolution] = resolutionPda(this.client.addresses.settlementProgramId, marketIdBigInt);
+    const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [claimReceipt] = claimPda(
       this.client.addresses.settlementProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
+      side,
     );
     const [vaultAuthority] = vaultAuthorityPda(this.client.addresses.settlementProgramId, marketIdBigInt);
+    const [vaultTokenAuthority] = vaultTokenAuthorityPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [userPosition] = positionPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
+      side,
     );
     const authorityAccount = await (this.client.settlementProgram as any).account.vaultAuthority.fetch(
       vaultAuthority,
@@ -100,26 +105,33 @@ export class SolanaSettlement implements OnchainSettlement {
         resolution,
         userPosition,
         claimReceipt,
+        marketVault,
         vaultAuthority,
+        vaultTokenAuthority,
         vaultTokenAccount: authorityAccount.vaultTokenAccount,
+        vaultProgram: this.client.addresses.vaultProgramId,
       })
       .rpc();
   }
 
-  async refundIfInvalidated(marketId: string): Promise<string> {
+  async refundIfInvalidated(marketId: string, side: PositionSide = "long"): Promise<string> {
     const marketIdBigInt = BigInt(marketId);
     const [protocolConfig] = protocolPda(this.client.addresses.settlementProgramId);
     const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
+    const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [vaultAuthority] = vaultAuthorityPda(this.client.addresses.settlementProgramId, marketIdBigInt);
+    const [vaultTokenAuthority] = vaultTokenAuthorityPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [userPosition] = positionPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
+      side,
     );
     const [refundReceipt] = refundPda(
       this.client.addresses.settlementProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
+      side,
     );
 
     const authorityAccount = await (this.client.settlementProgram as any).account.vaultAuthority.fetch(
@@ -140,19 +152,26 @@ export class SolanaSettlement implements OnchainSettlement {
         userAta,
         userPosition,
         refundReceipt,
+        marketVault,
         vaultAuthority,
+        vaultTokenAuthority,
         vaultTokenAccount: authorityAccount.vaultTokenAccount,
+        vaultProgram: this.client.addresses.vaultProgramId,
       })
       .rpc();
   }
 
-  async getPayoutStatus(marketId: string): Promise<"pending" | "claimable" | "claimed"> {
+  async getPayoutStatus(
+    marketId: string,
+    side: PositionSide = "long",
+  ): Promise<"pending" | "claimable" | "claimed"> {
     const marketIdBigInt = BigInt(marketId);
     const [resolution] = resolutionPda(this.client.addresses.settlementProgramId, marketIdBigInt);
     const [claimReceipt] = claimPda(
       this.client.addresses.settlementProgramId,
       marketIdBigInt,
       this.client.provider.wallet.publicKey,
+      side,
     );
 
     const resolutionAccount = await (this.client.settlementProgram as any).account.resolution.fetchNullable(

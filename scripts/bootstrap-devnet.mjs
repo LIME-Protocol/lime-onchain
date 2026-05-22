@@ -45,6 +45,10 @@ const [marketProtocol] = PublicKey.findProgramAddressSync([Buffer.from("protocol
 const [settlementProtocol] = PublicKey.findProgramAddressSync([Buffer.from("protocol")], settlementProgramId);
 const [marketPda] = PublicKey.findProgramAddressSync([Buffer.from("market"), marketBytes], marketProgramId);
 const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from("vault"), marketBytes], vaultProgramId);
+const [vaultTokenAuthority] = PublicKey.findProgramAddressSync(
+  [Buffer.from("vault_authority"), marketBytes],
+  vaultProgramId,
+);
 const [vaultAuthority] = PublicKey.findProgramAddressSync(
   [Buffer.from("vault_authority"), marketBytes],
   settlementProgramId,
@@ -132,7 +136,7 @@ if (!vaultInfo) {
       connection,
       wallet,
       usdcMint,
-      vaultAuthority,
+      vaultTokenAuthority,
       true,
     );
     vaultTokenAccount = ata.address;
@@ -145,6 +149,7 @@ if (!vaultInfo) {
       payer: wallet.publicKey,
       usdcMint,
       market: marketPda,
+      vaultAuthority: vaultTokenAuthority,
       marketVault: vaultPda,
       vaultTokenAccount,
       systemProgram: SystemProgram.programId,

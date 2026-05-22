@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
+use anchor_spl::token::{Mint, Token, TokenAccount};
 use lime_market::{Market, MarketStatus};
 use lime_vault::{MarketVault, PositionSide as VaultPositionSide, UserPosition};
 
@@ -109,38 +109,33 @@ pub mod lime_settlement {
         require!(!receipt.claimed, SettlementError::AlreadyClaimed);
 
         let amount = calculate_position_payout(
-            position.collateral_locked,
+            position.quantity,
             position.side,
             resolution.payoff_ratio,
         )?;
 
         receipt.market_id = market_id;
         receipt.user = ctx.accounts.user.key();
+        receipt.side = position.side;
         receipt.amount = amount;
         receipt.claimed = false;
         receipt.bump = ctx.bumps.claim_receipt;
 
-        let market_bytes = market_id.to_le_bytes();
-        let signer_seeds: &[&[u8]] = &[
-            b"vault_authority",
-            market_bytes.as_ref(),
-            &[ctx.accounts.vault_authority.bump],
-        ];
-
-        token::transfer_checked(
-            CpiContext::new_with_signer(
+        if amount > 0 {
+            transfer_from_vault_for_settlement(
+                ctx.accounts.vault_program.to_account_info(),
+                ctx.accounts.vault_authority.to_account_info(),
+                ctx.accounts.usdc_mint.to_account_info(),
+                ctx.accounts.market_vault.to_account_info(),
+                ctx.accounts.vault_token_authority.to_account_info(),
+                ctx.accounts.vault_token_account.to_account_info(),
+                ctx.accounts.user_ata.to_account_info(),
                 ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.vault_token_account.to_account_info(),
-                    mint: ctx.accounts.usdc_mint.to_account_info(),
-                    to: ctx.accounts.user_ata.to_account_info(),
-                    authority: ctx.accounts.vault_authority.to_account_info(),
-                },
-                &[signer_seeds],
-            ),
-            amount,
-            ctx.accounts.usdc_mint.decimals,
-        )?;
+                market_id,
+                amount,
+                ctx.accounts.vault_authority.bump,
+            )?;
+        }
 
         receipt.claimed = true;
         Ok(())
@@ -160,34 +155,29 @@ pub mod lime_settlement {
         let receipt = &mut ctx.accounts.refund_receipt;
         require!(!receipt.refunded, SettlementError::AlreadyRefunded);
 
-        let amount = position.collateral_locked;
+        let amount = position.cost_basis;
         receipt.market_id = market_id;
         receipt.user = position.owner;
+        receipt.side = position.side;
         receipt.amount = amount;
         receipt.refunded = false;
         receipt.bump = ctx.bumps.refund_receipt;
 
-        let market_bytes = market_id.to_le_bytes();
-        let signer_seeds: &[&[u8]] = &[
-            b"vault_authority",
-            market_bytes.as_ref(),
-            &[ctx.accounts.vault_authority.bump],
-        ];
-
-        token::transfer_checked(
-            CpiContext::new_with_signer(
+        if amount > 0 {
+            transfer_from_vault_for_settlement(
+                ctx.accounts.vault_program.to_account_info(),
+                ctx.accounts.vault_authority.to_account_info(),
+                ctx.accounts.usdc_mint.to_account_info(),
+                ctx.accounts.market_vault.to_account_info(),
+                ctx.accounts.vault_token_authority.to_account_info(),
+                ctx.accounts.vault_token_account.to_account_info(),
+                ctx.accounts.user_ata.to_account_info(),
                 ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.vault_token_account.to_account_info(),
-                    mint: ctx.accounts.usdc_mint.to_account_info(),
-                    to: ctx.accounts.user_ata.to_account_info(),
-                    authority: ctx.accounts.vault_authority.to_account_info(),
-                },
-                &[signer_seeds],
-            ),
-            amount,
-            ctx.accounts.usdc_mint.decimals,
-        )?;
+                market_id,
+                amount,
+                ctx.accounts.vault_authority.bump,
+            )?;
+        }
 
         receipt.refunded = true;
         Ok(())
@@ -266,47 +256,65 @@ pub struct SubmitResolution<'info> {
 pub struct ClaimPayout<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    pub usdc_mint: Account<'info, Mint>,
+    pub usdc_mint: Box<Account<'info, Mint>>,
     #[account(
         mut,
         constraint = user_ata.owner == user.key() @ SettlementError::Unauthorized,
         constraint = user_ata.mint == usdc_mint.key() @ SettlementError::InvalidMint
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub user_ata: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [b"resolution", market_id.to_le_bytes().as_ref()],
         bump = resolution.bump
     )]
-    pub resolution: Account<'info, Resolution>,
+    pub resolution: Box<Account<'info, Resolution>>,
     #[account(
         mut,
         constraint = user_position.owner == user.key() @ SettlementError::Unauthorized,
         constraint = user_position.market_id == market_id @ SettlementError::MarketMismatch
     )]
-    pub user_position: Account<'info, UserPosition>,
+    pub user_position: Box<Account<'info, UserPosition>>,
     #[account(
         init_if_needed,
         payer = user,
         space = 8 + ClaimReceipt::INIT_SPACE,
-        seeds = [b"claim", market_id.to_le_bytes().as_ref(), user.key().as_ref()],
+        seeds = [
+            b"claim",
+            market_id.to_le_bytes().as_ref(),
+            user.key().as_ref(),
+            user_position.side.seed()
+        ],
         bump
     )]
-    pub claim_receipt: Account<'info, ClaimReceipt>,
+    pub claim_receipt: Box<Account<'info, ClaimReceipt>>,
+    #[account(
+        mut,
+        seeds = [b"vault", market_id.to_le_bytes().as_ref()],
+        seeds::program = lime_vault::ID,
+        bump = market_vault.bump,
+        constraint = market_vault.market_id == market_id @ SettlementError::MarketMismatch,
+        constraint = market_vault.token_mint == usdc_mint.key() @ SettlementError::InvalidMint
+    )]
+    pub market_vault: Box<Account<'info, MarketVault>>,
     #[account(
         seeds = [b"vault_authority", market_id.to_le_bytes().as_ref()],
         bump = vault_authority.bump,
         constraint = resolution.vault_authority == vault_authority.key() @ SettlementError::InvalidVaultAuthority,
         constraint = vault_authority.token_mint == usdc_mint.key() @ SettlementError::InvalidMint
     )]
-    pub vault_authority: Account<'info, VaultAuthority>,
+    pub vault_authority: Box<Account<'info, VaultAuthority>>,
+    #[account(address = market_vault.vault_authority)]
+    /// CHECK: PDA owned by the vault program and used as token authority.
+    pub vault_token_authority: UncheckedAccount<'info>,
     #[account(
         mut,
         address = vault_authority.vault_token_account,
-        constraint = vault_token_account.owner == vault_authority.key() @ SettlementError::InvalidVaultAuthority,
+        constraint = vault_token_account.owner == vault_token_authority.key() @ SettlementError::InvalidVaultAuthority,
         constraint = vault_token_account.mint == usdc_mint.key() @ SettlementError::InvalidMint
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
+    pub vault_program: Program<'info, lime_vault::program::LimeVault>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -317,41 +325,59 @@ pub struct Refund<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
     #[account(seeds = [b"protocol"], bump = protocol_config.bump)]
-    pub protocol_config: Account<'info, ProtocolConfig>,
-    pub market: Account<'info, Market>,
-    pub usdc_mint: Account<'info, Mint>,
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
+    pub market: Box<Account<'info, Market>>,
+    pub usdc_mint: Box<Account<'info, Mint>>,
     #[account(
         mut,
         constraint = user_ata.owner == user_position.owner @ SettlementError::Unauthorized,
         constraint = user_ata.mint == usdc_mint.key() @ SettlementError::InvalidMint
     )]
-    pub user_ata: Account<'info, TokenAccount>,
+    pub user_ata: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         constraint = user_position.market_id == market_id @ SettlementError::MarketMismatch
     )]
-    pub user_position: Account<'info, UserPosition>,
+    pub user_position: Box<Account<'info, UserPosition>>,
     #[account(
         init_if_needed,
         payer = admin,
         space = 8 + RefundReceipt::INIT_SPACE,
-        seeds = [b"refund", market_id.to_le_bytes().as_ref(), user_position.owner.as_ref()],
+        seeds = [
+            b"refund",
+            market_id.to_le_bytes().as_ref(),
+            user_position.owner.as_ref(),
+            user_position.side.seed()
+        ],
         bump
     )]
-    pub refund_receipt: Account<'info, RefundReceipt>,
+    pub refund_receipt: Box<Account<'info, RefundReceipt>>,
+    #[account(
+        mut,
+        seeds = [b"vault", market_id.to_le_bytes().as_ref()],
+        seeds::program = lime_vault::ID,
+        bump = market_vault.bump,
+        constraint = market_vault.market_id == market_id @ SettlementError::MarketMismatch,
+        constraint = market_vault.token_mint == usdc_mint.key() @ SettlementError::InvalidMint
+    )]
+    pub market_vault: Box<Account<'info, MarketVault>>,
     #[account(
         seeds = [b"vault_authority", market_id.to_le_bytes().as_ref()],
         bump = vault_authority.bump,
         constraint = vault_authority.token_mint == usdc_mint.key() @ SettlementError::InvalidMint
     )]
-    pub vault_authority: Account<'info, VaultAuthority>,
+    pub vault_authority: Box<Account<'info, VaultAuthority>>,
+    #[account(address = market_vault.vault_authority)]
+    /// CHECK: PDA owned by the vault program and used as token authority.
+    pub vault_token_authority: UncheckedAccount<'info>,
     #[account(
         mut,
         address = vault_authority.vault_token_account,
-        constraint = vault_token_account.owner == vault_authority.key() @ SettlementError::InvalidVaultAuthority,
+        constraint = vault_token_account.owner == vault_token_authority.key() @ SettlementError::InvalidVaultAuthority,
         constraint = vault_token_account.mint == usdc_mint.key() @ SettlementError::InvalidMint
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
+    pub vault_program: Program<'info, lime_vault::program::LimeVault>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -383,6 +409,7 @@ pub struct Resolution {
 pub struct ClaimReceipt {
     pub market_id: u64,
     pub user: Pubkey,
+    pub side: VaultPositionSide,
     pub amount: u64,
     pub claimed: bool,
     pub bump: u8,
@@ -393,6 +420,7 @@ pub struct ClaimReceipt {
 pub struct RefundReceipt {
     pub market_id: u64,
     pub user: Pubkey,
+    pub side: VaultPositionSide,
     pub amount: u64,
     pub refunded: bool,
     pub bump: u8,
@@ -440,15 +468,15 @@ fn calculate_payoff(observed: u64, lower: u64, upper: u64) -> u64 {
 }
 
 fn calculate_position_payout(
-    collateral_locked: u64,
+    quantity: u64,
     side: VaultPositionSide,
     payoff_ratio: u64,
 ) -> Result<u64> {
     let numerator = match side {
-        VaultPositionSide::Long => u128::from(collateral_locked)
+        VaultPositionSide::Long => u128::from(quantity)
             .checked_mul(u128::from(payoff_ratio))
             .ok_or(SettlementError::MathOverflow)?,
-        VaultPositionSide::Short => u128::from(collateral_locked)
+        VaultPositionSide::Short => u128::from(quantity)
             .checked_mul(u128::from(SCALE.saturating_sub(payoff_ratio)))
             .ok_or(SettlementError::MathOverflow)?,
     };
@@ -458,4 +486,42 @@ fn calculate_position_payout(
         .ok_or(SettlementError::MathOverflow)?;
 
     u64::try_from(payout).map_err(|_| SettlementError::MathOverflow.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_from_vault_for_settlement<'info>(
+    vault_program: AccountInfo<'info>,
+    settlement_authority: AccountInfo<'info>,
+    usdc_mint: AccountInfo<'info>,
+    market_vault: AccountInfo<'info>,
+    vault_token_authority: AccountInfo<'info>,
+    vault_token_account: AccountInfo<'info>,
+    recipient_ata: AccountInfo<'info>,
+    token_program: AccountInfo<'info>,
+    market_id: u64,
+    amount: u64,
+    vault_authority_bump: u8,
+) -> Result<()> {
+    let market_bytes = market_id.to_le_bytes();
+    let signer_seeds: &[&[u8]] = &[
+        b"vault_authority",
+        market_bytes.as_ref(),
+        &[vault_authority_bump],
+    ];
+
+    let cpi_accounts = lime_vault::cpi::accounts::TransferForSettlement {
+        settlement_authority,
+        usdc_mint,
+        market_vault,
+        vault_authority: vault_token_authority,
+        vault_token_account,
+        recipient_ata,
+        token_program,
+    };
+
+    lime_vault::cpi::transfer_for_settlement(
+        CpiContext::new_with_signer(vault_program, cpi_accounts, &[signer_seeds]),
+        market_id,
+        amount,
+    )
 }
