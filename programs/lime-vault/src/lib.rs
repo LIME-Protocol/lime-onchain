@@ -5,6 +5,10 @@ use lime_market::{Market, MarketStatus};
 declare_id!("BY7MggeDqzyGgJnCQ34pF5pJA6kGUtNvFhaW4VHbFnLm");
 
 const SCALE: u64 = 1_000_000;
+pub const LIME_SIGNED_ORDER_DOMAIN: &[u8; 17] = b"LIME_SIGNED_ORDER";
+pub const LIME_SIGNED_ORDER_DOMAIN_LEN: usize = 17;
+pub const SIGNED_ORDER_MESSAGE_LEN: usize =
+    1 + LIME_SIGNED_ORDER_DOMAIN_LEN + 1 + 1 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 16;
 
 #[program]
 pub mod lime_vault {
@@ -180,7 +184,10 @@ pub mod lime_vault {
         require!(price_scaled <= SCALE, VaultError::InvalidPrice);
         let market = &ctx.accounts.market;
         require!(market.market_id == market_id, VaultError::MarketMismatch);
-        require!(market.status == MarketStatus::Active, VaultError::MarketNotTradable);
+        require!(
+            market.status == MarketStatus::Active,
+            VaultError::MarketNotTradable
+        );
         require!(
             ctx.accounts.market_vault.market_id == market_id,
             VaultError::MarketMismatch
@@ -190,10 +197,22 @@ pub mod lime_vault {
         let seller_position = &mut ctx.accounts.seller_position;
         let buyer_collateral = &mut ctx.accounts.buyer_collateral;
         let seller_collateral = &mut ctx.accounts.seller_collateral;
-        require!(buyer_collateral.market_id == market_id, VaultError::MarketMismatch);
-        require!(seller_collateral.market_id == market_id, VaultError::MarketMismatch);
-        require!(buyer_collateral.owner == buyer, VaultError::PositionOwnerMismatch);
-        require!(seller_collateral.owner == seller, VaultError::PositionOwnerMismatch);
+        require!(
+            buyer_collateral.market_id == market_id,
+            VaultError::MarketMismatch
+        );
+        require!(
+            seller_collateral.market_id == market_id,
+            VaultError::MarketMismatch
+        );
+        require!(
+            buyer_collateral.owner == buyer,
+            VaultError::PositionOwnerMismatch
+        );
+        require!(
+            seller_collateral.owner == seller,
+            VaultError::PositionOwnerMismatch
+        );
         require!(buyer != seller, VaultError::SelfTradeDisabled);
 
         let buyer_fill = &mut ctx.accounts.buyer_fill;
@@ -215,12 +234,27 @@ pub mod lime_vault {
             seller_fill.bump = ctx.bumps.seller_fill;
         }
 
-        require!(buyer_fill.market_id == market_id, VaultError::MarketMismatch);
-        require!(seller_fill.market_id == market_id, VaultError::MarketMismatch);
+        require!(
+            buyer_fill.market_id == market_id,
+            VaultError::MarketMismatch
+        );
+        require!(
+            seller_fill.market_id == market_id,
+            VaultError::MarketMismatch
+        );
         require!(buyer_fill.owner == buyer, VaultError::PositionOwnerMismatch);
-        require!(seller_fill.owner == seller, VaultError::PositionOwnerMismatch);
-        require!(buyer_fill.nonce == buyer_nonce, VaultError::FillNonceMismatch);
-        require!(seller_fill.nonce == seller_nonce, VaultError::FillNonceMismatch);
+        require!(
+            seller_fill.owner == seller,
+            VaultError::PositionOwnerMismatch
+        );
+        require!(
+            buyer_fill.nonce == buyer_nonce,
+            VaultError::FillNonceMismatch
+        );
+        require!(
+            seller_fill.nonce == seller_nonce,
+            VaultError::FillNonceMismatch
+        );
 
         if buyer_position.owner == Pubkey::default() {
             buyer_position.market_id = market_id;
@@ -235,12 +269,30 @@ pub mod lime_vault {
             seller_position.bump = ctx.bumps.seller_position;
         }
 
-        require!(buyer_position.market_id == market_id, VaultError::MarketMismatch);
-        require!(seller_position.market_id == market_id, VaultError::MarketMismatch);
-        require!(buyer_position.owner == buyer, VaultError::PositionOwnerMismatch);
-        require!(seller_position.owner == seller, VaultError::PositionOwnerMismatch);
-        require!(buyer_position.side == PositionSide::Long, VaultError::InvalidSideForTrade);
-        require!(seller_position.side == PositionSide::Short, VaultError::InvalidSideForTrade);
+        require!(
+            buyer_position.market_id == market_id,
+            VaultError::MarketMismatch
+        );
+        require!(
+            seller_position.market_id == market_id,
+            VaultError::MarketMismatch
+        );
+        require!(
+            buyer_position.owner == buyer,
+            VaultError::PositionOwnerMismatch
+        );
+        require!(
+            seller_position.owner == seller,
+            VaultError::PositionOwnerMismatch
+        );
+        require!(
+            buyer_position.side == PositionSide::Long,
+            VaultError::InvalidSideForTrade
+        );
+        require!(
+            seller_position.side == PositionSide::Short,
+            VaultError::InvalidSideForTrade
+        );
 
         let buyer_notional = quantity
             .checked_mul(price_scaled)
@@ -593,20 +645,56 @@ pub enum PositionSide {
     Short,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, PartialEq, Eq)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, InitSpace, PartialEq, Eq)]
 pub enum OrderSide {
     Buy,
     Sell,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, PartialEq, Eq)]
+impl OrderSide {
+    pub fn as_byte(&self) -> u8 {
+        match self {
+            OrderSide::Buy => 0,
+            OrderSide::Sell => 1,
+        }
+    }
+
+    pub fn try_from_byte(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(OrderSide::Buy),
+            1 => Ok(OrderSide::Sell),
+            _ => err!(VaultError::InvalidSignedOrderSide),
+        }
+    }
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, InitSpace, PartialEq, Eq)]
 pub enum OrderNetwork {
     MainnetBeta,
     Devnet,
     Localnet,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
+impl OrderNetwork {
+    pub fn as_byte(&self) -> u8 {
+        match self {
+            OrderNetwork::MainnetBeta => 0,
+            OrderNetwork::Devnet => 1,
+            OrderNetwork::Localnet => 2,
+        }
+    }
+
+    pub fn try_from_byte(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(OrderNetwork::MainnetBeta),
+            1 => Ok(OrderNetwork::Devnet),
+            2 => Ok(OrderNetwork::Localnet),
+            _ => err!(VaultError::InvalidSignedOrderNetwork),
+        }
+    }
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, InitSpace, PartialEq, Eq)]
 pub struct SignedOrder {
     pub version: u8,
     pub network: OrderNetwork,
@@ -642,6 +730,129 @@ pub struct TradeSettled {
     pub seller: Pubkey,
     pub quantity: u64,
     pub price_scaled: u64,
+}
+
+pub fn encode_signed_order(order: &SignedOrder) -> Result<[u8; SIGNED_ORDER_MESSAGE_LEN]> {
+    validate_signed_order_values(order)?;
+
+    let mut buffer = [0u8; SIGNED_ORDER_MESSAGE_LEN];
+    let mut offset = 0;
+    buffer[offset] = LIME_SIGNED_ORDER_DOMAIN_LEN as u8;
+    offset += 1;
+    buffer[offset..offset + LIME_SIGNED_ORDER_DOMAIN_LEN].copy_from_slice(LIME_SIGNED_ORDER_DOMAIN);
+    offset += LIME_SIGNED_ORDER_DOMAIN_LEN;
+    buffer[offset] = order.version;
+    offset += 1;
+    buffer[offset] = order.network.as_byte();
+    offset += 1;
+    buffer[offset..offset + 32].copy_from_slice(order.market_program_id.as_ref());
+    offset += 32;
+    buffer[offset..offset + 32].copy_from_slice(order.vault_program_id.as_ref());
+    offset += 32;
+    buffer[offset..offset + 8].copy_from_slice(&order.market_id.to_le_bytes());
+    offset += 8;
+    buffer[offset..offset + 32].copy_from_slice(order.owner.as_ref());
+    offset += 32;
+    buffer[offset] = order.side.as_byte();
+    offset += 1;
+    buffer[offset..offset + 8].copy_from_slice(&order.price_scaled.to_le_bytes());
+    offset += 8;
+    buffer[offset..offset + 8].copy_from_slice(&order.quantity.to_le_bytes());
+    offset += 8;
+    buffer[offset..offset + 8].copy_from_slice(&order.expiration_ts.to_le_bytes());
+    offset += 8;
+    buffer[offset..offset + 16].copy_from_slice(&order.nonce.to_le_bytes());
+    Ok(buffer)
+}
+
+pub fn parse_signed_order(message: &[u8]) -> Result<SignedOrder> {
+    require!(
+        message.len() == SIGNED_ORDER_MESSAGE_LEN,
+        VaultError::InvalidSignedOrderLength
+    );
+    require!(
+        message[0] as usize == LIME_SIGNED_ORDER_DOMAIN_LEN,
+        VaultError::InvalidSignedOrderDomain
+    );
+    require!(
+        &message[1..1 + LIME_SIGNED_ORDER_DOMAIN_LEN] == LIME_SIGNED_ORDER_DOMAIN,
+        VaultError::InvalidSignedOrderDomain
+    );
+
+    let mut offset = 1 + LIME_SIGNED_ORDER_DOMAIN_LEN;
+    let version = message[offset];
+    offset += 1;
+    let network = OrderNetwork::try_from_byte(message[offset])?;
+    offset += 1;
+    let market_program_id =
+        Pubkey::new_from_array(message[offset..offset + 32].try_into().unwrap());
+    offset += 32;
+    let vault_program_id = Pubkey::new_from_array(message[offset..offset + 32].try_into().unwrap());
+    offset += 32;
+    let market_id = u64::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
+    offset += 8;
+    let owner = Pubkey::new_from_array(message[offset..offset + 32].try_into().unwrap());
+    offset += 32;
+    let side = OrderSide::try_from_byte(message[offset])?;
+    offset += 1;
+    let price_scaled = u64::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
+    offset += 8;
+    let quantity = u64::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
+    offset += 8;
+    let expiration_ts = i64::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
+    offset += 8;
+    let nonce = u128::from_le_bytes(message[offset..offset + 16].try_into().unwrap());
+
+    Ok(SignedOrder {
+        version,
+        network,
+        market_program_id,
+        vault_program_id,
+        market_id,
+        owner,
+        side,
+        price_scaled,
+        quantity,
+        expiration_ts,
+        nonce,
+    })
+}
+
+pub fn validate_signed_order(
+    order: &SignedOrder,
+    expected_network: OrderNetwork,
+    expected_market_program_id: Pubkey,
+    expected_vault_program_id: Pubkey,
+    expected_market_id: u64,
+    now_ts: i64,
+) -> Result<()> {
+    validate_signed_order_values(order)?;
+    require!(order.version == 1, VaultError::InvalidSignedOrderVersion);
+    require!(
+        order.network == expected_network,
+        VaultError::InvalidSignedOrderNetwork
+    );
+    require!(
+        order.market_program_id == expected_market_program_id,
+        VaultError::SignedOrderProgramMismatch
+    );
+    require!(
+        order.vault_program_id == expected_vault_program_id,
+        VaultError::SignedOrderProgramMismatch
+    );
+    require!(
+        order.market_id == expected_market_id,
+        VaultError::SignedOrderMarketMismatch
+    );
+    require!(order.expiration_ts > now_ts, VaultError::SignedOrderExpired);
+    Ok(())
+}
+
+fn validate_signed_order_values(order: &SignedOrder) -> Result<()> {
+    require!(order.price_scaled <= SCALE, VaultError::InvalidPrice);
+    require!(order.quantity > 0, VaultError::InvalidAmount);
+    require!(order.nonce > 0, VaultError::InvalidSignedOrderNonce);
+    Ok(())
 }
 
 #[error_code]
@@ -680,6 +891,24 @@ pub enum VaultError {
     SelfTradeDisabled,
     #[msg("Settlement authority is not authorized")]
     UnauthorizedSettlement,
+    #[msg("Signed Order message length is invalid")]
+    InvalidSignedOrderLength,
+    #[msg("Signed Order domain is invalid")]
+    InvalidSignedOrderDomain,
+    #[msg("Signed Order version is invalid")]
+    InvalidSignedOrderVersion,
+    #[msg("Signed Order network is invalid")]
+    InvalidSignedOrderNetwork,
+    #[msg("Signed Order side is invalid")]
+    InvalidSignedOrderSide,
+    #[msg("Signed Order Program scope does not match")]
+    SignedOrderProgramMismatch,
+    #[msg("Signed Order Market scope does not match")]
+    SignedOrderMarketMismatch,
+    #[msg("Signed Order is expired")]
+    SignedOrderExpired,
+    #[msg("Signed Order nonce is invalid")]
+    InvalidSignedOrderNonce,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -714,4 +943,185 @@ fn transfer_from_vault<'info>(
         amount,
         decimals,
     )
+}
+
+#[cfg(test)]
+mod signed_order_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn sample_order() -> SignedOrder {
+        SignedOrder {
+            version: 1,
+            network: OrderNetwork::Localnet,
+            market_program_id: Pubkey::from_str("G2YAvLwHFmd4wgs45QScmBYpFthkEjhU34VKQ3HKMagk")
+                .unwrap(),
+            vault_program_id: crate::ID,
+            market_id: 42,
+            owner: Pubkey::from_str("11111111111111111111111111111112").unwrap(),
+            side: OrderSide::Buy,
+            price_scaled: 620_000,
+            quantity: 5_000_000,
+            expiration_ts: 1_800_000_000,
+            nonce: 0x0102030405060708090a0b0c0d0e0f10,
+        }
+    }
+
+    #[test]
+    fn encodes_signed_order_to_fixed_layout_bytes() {
+        let order = sample_order();
+        let encoded = encode_signed_order(&order).unwrap();
+
+        assert_eq!(encoded.len(), SIGNED_ORDER_MESSAGE_LEN);
+        assert_eq!(encoded[0], LIME_SIGNED_ORDER_DOMAIN_LEN as u8);
+        assert_eq!(
+            &encoded[1..1 + LIME_SIGNED_ORDER_DOMAIN_LEN],
+            LIME_SIGNED_ORDER_DOMAIN
+        );
+        assert_eq!(encoded[18], 1);
+        assert_eq!(encoded[19], 2);
+        assert_eq!(u64::from_le_bytes(encoded[84..92].try_into().unwrap()), 42);
+        assert_eq!(encoded[124], 0);
+        assert_eq!(
+            u64::from_le_bytes(encoded[125..133].try_into().unwrap()),
+            620_000
+        );
+        assert_eq!(
+            u64::from_le_bytes(encoded[133..141].try_into().unwrap()),
+            5_000_000
+        );
+        assert_eq!(
+            i64::from_le_bytes(encoded[141..149].try_into().unwrap()),
+            1_800_000_000
+        );
+        assert_eq!(
+            u128::from_le_bytes(encoded[149..165].try_into().unwrap()),
+            0x0102030405060708090a0b0c0d0e0f10
+        );
+    }
+
+    #[test]
+    fn parses_signed_order_from_canonical_bytes() {
+        let order = sample_order();
+        let encoded = encode_signed_order(&order).unwrap();
+        let parsed = parse_signed_order(&encoded).unwrap();
+
+        assert_eq!(parsed, order);
+    }
+
+    #[test]
+    fn validates_signed_order_scope_and_values() {
+        let order = sample_order();
+
+        validate_signed_order(
+            &order,
+            OrderNetwork::Localnet,
+            order.market_program_id,
+            order.vault_program_id,
+            order.market_id,
+            1_700_000_000,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_signed_order_fields() {
+        let order = sample_order();
+        let mut encoded = encode_signed_order(&order).unwrap();
+
+        encoded[0] = 0;
+        assert_eq!(
+            parse_signed_order(&encoded).unwrap_err(),
+            error!(VaultError::InvalidSignedOrderDomain)
+        );
+
+        let mut encoded = encode_signed_order(&order).unwrap();
+        encoded[19] = 9;
+        assert_eq!(
+            parse_signed_order(&encoded).unwrap_err(),
+            error!(VaultError::InvalidSignedOrderNetwork)
+        );
+
+        let mut encoded = encode_signed_order(&order).unwrap();
+        encoded[124] = 9;
+        assert_eq!(
+            parse_signed_order(&encoded).unwrap_err(),
+            error!(VaultError::InvalidSignedOrderSide)
+        );
+
+        let mut invalid = order;
+        invalid.market_id = 7;
+        assert_eq!(
+            validate_signed_order(
+                &invalid,
+                OrderNetwork::Localnet,
+                order.market_program_id,
+                order.vault_program_id,
+                order.market_id,
+                1_700_000_000,
+            )
+            .unwrap_err(),
+            error!(VaultError::SignedOrderMarketMismatch)
+        );
+
+        let mut invalid = order;
+        invalid.price_scaled = SCALE + 1;
+        assert_eq!(
+            validate_signed_order(
+                &invalid,
+                OrderNetwork::Localnet,
+                order.market_program_id,
+                order.vault_program_id,
+                order.market_id,
+                1_700_000_000,
+            )
+            .unwrap_err(),
+            error!(VaultError::InvalidPrice)
+        );
+
+        let mut invalid = order;
+        invalid.quantity = 0;
+        assert_eq!(
+            validate_signed_order(
+                &invalid,
+                OrderNetwork::Localnet,
+                order.market_program_id,
+                order.vault_program_id,
+                order.market_id,
+                1_700_000_000,
+            )
+            .unwrap_err(),
+            error!(VaultError::InvalidAmount)
+        );
+
+        let mut invalid = order;
+        invalid.expiration_ts = 1_699_999_999;
+        assert_eq!(
+            validate_signed_order(
+                &invalid,
+                OrderNetwork::Localnet,
+                order.market_program_id,
+                order.vault_program_id,
+                order.market_id,
+                1_700_000_000,
+            )
+            .unwrap_err(),
+            error!(VaultError::SignedOrderExpired)
+        );
+
+        let mut invalid = order;
+        invalid.nonce = 0;
+        assert_eq!(
+            validate_signed_order(
+                &invalid,
+                OrderNetwork::Localnet,
+                order.market_program_id,
+                order.vault_program_id,
+                order.market_id,
+                1_700_000_000,
+            )
+            .unwrap_err(),
+            error!(VaultError::InvalidSignedOrderNonce)
+        );
+    }
 }
