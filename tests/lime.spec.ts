@@ -139,6 +139,12 @@ describe("lime-onchain baseline", () => {
     expect(settleAccounts.has("submitter")).to.equal(true);
     expect(settleAccounts.has("buyer_fill")).to.equal(true);
     expect(settleAccounts.has("seller_fill")).to.equal(true);
+    expect(settleAccounts.has("instructions")).to.equal(true);
+    expect(settleTrade.args.map((arg: any) => arg.name)).to.deep.equal([
+      "buyer_order",
+      "seller_order",
+      "quantity",
+    ]);
 
     const settlementInstructionNames = new Set(
       settlementIdl.instructions.map((i: any) => i.name),
@@ -165,6 +171,11 @@ describe("lime-onchain baseline", () => {
     expect(typesSdk).to.include("withdrawAvailableCollateral(");
     expect(vaultSdk).to.include("async settleTrade(");
     expect(vaultSdk).to.include(".settleTrade(");
+    expect(vaultSdk).to.include("buyerOrder");
+    expect(vaultSdk).to.include("sellerOrder");
+    expect(vaultSdk).to.not.include("backendSigner");
+    expect(vaultSdk).to.not.include("buyerNonce");
+    expect(vaultSdk).to.not.include("sellerNonce");
     expect(vaultSdk).to.include("async depositCollateral(");
     expect(vaultSdk).to.include("async withdrawAvailableCollateral(");
     expect(vaultSdk).to.include("buyerPosition");

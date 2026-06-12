@@ -15,10 +15,41 @@ import type {
   OnchainCollateral,
   OnchainTradeExecution,
   PositionSide,
+  SignedOrderInput,
   TradeExecutionInput,
 } from "./types.js";
 
 const SCALE = 1_000_000;
+const SYSVAR_INSTRUCTIONS_PUBKEY = new PublicKey("Sysvar1nstructions1111111111111111111111111");
+
+function anchorNetwork(network: SignedOrderInput["network"]): Record<string, Record<string, never>> {
+  if (network === "mainnet-beta") return { mainnetBeta: {} };
+  if (network === "devnet") return { devnet: {} };
+  if (network === "localnet") return { localnet: {} };
+  throw new Error(`Unsupported signed order network: ${network satisfies never}`);
+}
+
+function anchorSide(side: SignedOrderInput["side"]): Record<string, Record<string, never>> {
+  if (side === "buy") return { buy: {} };
+  if (side === "sell") return { sell: {} };
+  throw new Error(`Unsupported signed order side: ${side satisfies never}`);
+}
+
+function anchorSignedOrder(order: SignedOrderInput): Record<string, unknown> {
+  return {
+    version: order.version,
+    network: anchorNetwork(order.network),
+    marketProgramId: order.marketProgramId,
+    vaultProgramId: order.vaultProgramId,
+    marketId: new BN(order.marketId.toString()),
+    owner: order.owner,
+    side: anchorSide(order.side),
+    priceScaled: new BN(order.priceScaled.toString()),
+    quantity: new BN(order.quantity.toString()),
+    expirationTs: new BN(order.expirationTs.toString()),
+    nonce: new BN(order.nonce.toString()),
+  };
+}
 
 export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecution {
   constructor(private readonly client: LimeClient) {}
@@ -147,9 +178,12 @@ export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecutio
   }
 
   async settleTrade(input: TradeExecutionInput): Promise<string> {
-    const marketIdBigInt = BigInt(input.marketId);
-    const buyer = new PublicKey(input.buyer);
-    const seller = new PublicKey(input.seller);
+    const marketIdBigInt = input.buyerOrder.marketId;
+    if (input.sellerOrder.marketId !== marketIdBigInt) {
+      throw new Error("Signed order market mismatch");
+    }
+    const buyer = input.buyerOrder.owner;
+    const seller = input.sellerOrder.owner;
     const [market] = marketPda(this.client.addresses.marketProgramId, marketIdBigInt);
     const [marketVault] = vaultPda(this.client.addresses.vaultProgramId, marketIdBigInt);
     const [buyerCollateral] = collateralPda(
@@ -162,19 +196,17 @@ export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecutio
       marketIdBigInt,
       seller,
     );
-    const buyerNonce = input.buyerNonce ?? 0n;
-    const sellerNonce = input.sellerNonce ?? 0n;
     const [buyerFill] = fillPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       buyer,
-      buyerNonce,
+      input.buyerOrder.nonce,
     );
     const [sellerFill] = fillPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
       seller,
-      sellerNonce,
+      input.sellerOrder.nonce,
     );
     const [buyerPosition] = positionPda(
       this.client.addresses.vaultProgramId,
@@ -188,17 +220,12 @@ export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecutio
       seller,
       "short",
     );
-    const quantityUnits = BigInt(Math.round(input.quantity * SCALE));
 
     return this.client.vaultProgram.methods
       .settleTrade(
-        new BN(input.marketId),
-        buyer,
-        seller,
-        new BN(buyerNonce.toString()),
-        new BN(sellerNonce.toString()),
-        new BN(quantityUnits.toString()),
-        new BN(Math.floor(input.priceScaled).toString()),
+        anchorSignedOrder(input.buyerOrder),
+        anchorSignedOrder(input.sellerOrder),
+        new BN(input.quantity.toString()),
       )
       .accounts({
         submitter: this.client.provider.wallet.publicKey,
@@ -210,6 +237,7 @@ export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecutio
         sellerFill,
         buyerPosition,
         sellerPosition,
+        instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
       })
       .rpc();
   }
