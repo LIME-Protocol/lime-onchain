@@ -1068,6 +1068,7 @@ fn signed_order_signature_match(
     false
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum Ed25519Match {
     Full,
     OwnerOnly,
@@ -1078,29 +1079,38 @@ fn ed25519_instruction_matches(data: &[u8], owner: Pubkey, expected_message: &[u
     const ED25519_INSTRUCTION_HEADER_LEN: usize = 16;
     const ED25519_CURRENT_INSTRUCTION: u16 = u16::MAX;
 
-    if data.len() < ED25519_INSTRUCTION_HEADER_LEN || data[0] != 1 {
+    if data.len() < ED25519_INSTRUCTION_HEADER_LEN || data[0] != 1 || data[1] != 0 {
         return Ed25519Match::None;
     }
 
+    let signature_offset = u16::from_le_bytes([data[2], data[3]]) as usize;
+    let signature_instruction_index = u16::from_le_bytes([data[4], data[5]]);
     let public_key_offset = u16::from_le_bytes([data[6], data[7]]) as usize;
     let public_key_instruction_index = u16::from_le_bytes([data[8], data[9]]);
     let message_offset = u16::from_le_bytes([data[10], data[11]]) as usize;
     let message_size = u16::from_le_bytes([data[12], data[13]]) as usize;
     let message_instruction_index = u16::from_le_bytes([data[14], data[15]]);
 
-    if public_key_instruction_index != ED25519_CURRENT_INSTRUCTION
+    if signature_instruction_index != ED25519_CURRENT_INSTRUCTION
+        || public_key_instruction_index != ED25519_CURRENT_INSTRUCTION
         || message_instruction_index != ED25519_CURRENT_INSTRUCTION
     {
         return Ed25519Match::None;
     }
 
+    let Some(signature_end) = signature_offset.checked_add(64) else {
+        return Ed25519Match::None;
+    };
     let Some(public_key_end) = public_key_offset.checked_add(32) else {
         return Ed25519Match::None;
     };
     let Some(message_end) = message_offset.checked_add(message_size) else {
         return Ed25519Match::None;
     };
-    if public_key_end > data.len() || message_end > data.len() {
+    if signature_end > data.len() || public_key_end > data.len() || message_end > data.len() {
+        return Ed25519Match::None;
+    }
+    if message_size != SIGNED_ORDER_MESSAGE_LEN {
         return Ed25519Match::None;
     }
     if &data[public_key_offset..public_key_end] != owner.as_ref() {
@@ -1231,6 +1241,129 @@ mod signed_order_tests {
             expiration_ts: 1_800_000_000,
             nonce: 0x0102030405060708090a0b0c0d0e0f10,
         }
+    }
+
+    fn ed25519_test_instruction_data(
+        owner: Pubkey,
+        message: &[u8],
+        signature: [u8; 64],
+    ) -> Vec<u8> {
+        let signature_offset = 16u16;
+        let public_key_offset = signature_offset + 64;
+        let message_offset = public_key_offset + 32;
+        let message_size = message.len() as u16;
+        let current_instruction = u16::MAX;
+        let mut data = vec![0u8; message_offset as usize + message.len()];
+
+        data[0] = 1;
+        data[1] = 0;
+        data[2..4].copy_from_slice(&signature_offset.to_le_bytes());
+        data[4..6].copy_from_slice(&current_instruction.to_le_bytes());
+        data[6..8].copy_from_slice(&public_key_offset.to_le_bytes());
+        data[8..10].copy_from_slice(&current_instruction.to_le_bytes());
+        data[10..12].copy_from_slice(&message_offset.to_le_bytes());
+        data[12..14].copy_from_slice(&message_size.to_le_bytes());
+        data[14..16].copy_from_slice(&current_instruction.to_le_bytes());
+        data[signature_offset as usize..public_key_offset as usize].copy_from_slice(&signature);
+        data[public_key_offset as usize..message_offset as usize].copy_from_slice(owner.as_ref());
+        data[message_offset as usize..].copy_from_slice(message);
+        data
+    }
+
+    #[test]
+    fn matches_valid_ed25519_instruction_data() {
+        let order = sample_order();
+        let message = encode_signed_order(&order).unwrap();
+        let data = ed25519_test_instruction_data(order.owner, &message, [7u8; 64]);
+
+        assert_eq!(
+            ed25519_instruction_matches(&data, order.owner, &message),
+            Ed25519Match::Full
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_ed25519_instruction_data() {
+        let order = sample_order();
+        let message = encode_signed_order(&order).unwrap();
+        let data = ed25519_test_instruction_data(order.owner, &message, [7u8; 64]);
+
+        let mut short = data.clone();
+        short.truncate(15);
+        assert_eq!(
+            ed25519_instruction_matches(&short, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut multiple_signatures = data.clone();
+        multiple_signatures[0] = 2;
+        assert_eq!(
+            ed25519_instruction_matches(&multiple_signatures, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut nonzero_padding = data.clone();
+        nonzero_padding[1] = 1;
+        assert_eq!(
+            ed25519_instruction_matches(&nonzero_padding, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut signature_out_of_bounds = data.clone();
+        signature_out_of_bounds[2..4].copy_from_slice(&(u16::MAX - 1).to_le_bytes());
+        assert_eq!(
+            ed25519_instruction_matches(&signature_out_of_bounds, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut pubkey_out_of_bounds = data.clone();
+        pubkey_out_of_bounds[6..8].copy_from_slice(&(u16::MAX - 1).to_le_bytes());
+        assert_eq!(
+            ed25519_instruction_matches(&pubkey_out_of_bounds, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut message_out_of_bounds = data.clone();
+        message_out_of_bounds[10..12].copy_from_slice(&(u16::MAX - 1).to_le_bytes());
+        assert_eq!(
+            ed25519_instruction_matches(&message_out_of_bounds, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut signature_cross_instruction = data.clone();
+        signature_cross_instruction[4..6].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            ed25519_instruction_matches(&signature_cross_instruction, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut pubkey_cross_instruction = data.clone();
+        pubkey_cross_instruction[8..10].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            ed25519_instruction_matches(&pubkey_cross_instruction, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let mut message_cross_instruction = data.clone();
+        message_cross_instruction[14..16].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            ed25519_instruction_matches(&message_cross_instruction, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let wrong_owner = Pubkey::new_unique();
+        let wrong_pubkey_data = ed25519_test_instruction_data(wrong_owner, &message, [7u8; 64]);
+        assert_eq!(
+            ed25519_instruction_matches(&wrong_pubkey_data, order.owner, &message),
+            Ed25519Match::None
+        );
+
+        let wrong_message_data =
+            ed25519_test_instruction_data(order.owner, &[9u8; SIGNED_ORDER_MESSAGE_LEN], [7u8; 64]);
+        assert_eq!(
+            ed25519_instruction_matches(&wrong_message_data, order.owner, &message),
+            Ed25519Match::OwnerOnly
+        );
     }
 
     #[test]

@@ -185,6 +185,10 @@ async function settleSignedTrade(input: {
   buyerOrderOverride?: Partial<SignedOrderInput>;
   sellerOrderOverride?: Partial<SignedOrderInput>;
   omitBuyerSignature?: boolean;
+  omitSellerSignature?: boolean;
+  signBuyerOrderWithSellerKey?: boolean;
+  signSellerOrderWithBuyerKey?: boolean;
+  swapSignatureMessages?: boolean;
   signWrongSellerMessage?: boolean;
 }): Promise<{
   buyerOrder: SignedOrderInput;
@@ -230,19 +234,29 @@ async function settleSignedTrade(input: {
   if (!input.omitBuyerSignature) {
     transaction.add(
       Ed25519Program.createInstructionWithPrivateKey({
-        privateKey: input.buyer.secretKey,
-        message: encodeSignedOrder(buyerOrder),
+        privateKey: input.signBuyerOrderWithSellerKey
+          ? input.seller.secretKey
+          : input.buyer.secretKey,
+        message: input.swapSignatureMessages
+          ? encodeSignedOrder(sellerOrder)
+          : encodeSignedOrder(buyerOrder),
       }),
     );
   }
-  transaction.add(
-    Ed25519Program.createInstructionWithPrivateKey({
-      privateKey: input.seller.secretKey,
-      message: input.signWrongSellerMessage
-        ? encodeSignedOrder({ ...sellerOrder, priceScaled: sellerOrder.priceScaled + 1n })
-        : encodeSignedOrder(sellerOrder),
-    }),
-  );
+  if (!input.omitSellerSignature) {
+    transaction.add(
+      Ed25519Program.createInstructionWithPrivateKey({
+        privateKey: input.signSellerOrderWithBuyerKey
+          ? input.buyer.secretKey
+          : input.seller.secretKey,
+        message: input.swapSignatureMessages
+          ? encodeSignedOrder(buyerOrder)
+          : input.signWrongSellerMessage
+            ? encodeSignedOrder({ ...sellerOrder, priceScaled: sellerOrder.priceScaled + 1n })
+            : encodeSignedOrder(sellerOrder),
+      }),
+    );
+  }
   transaction.add(
     await input.vaultProgram.methods
       .settleTrade(
@@ -674,11 +688,83 @@ describe("collateral integration", () => {
         marketId,
         quantity,
         sellerPriceScaled: priceScaled,
+        buyerNonce: 16n,
+        sellerNonce: 17n,
+        omitSellerSignature: true,
+      });
+      throw new Error("Expected missing seller signature to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderSignatureMissing");
+    }
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 18n,
+        sellerNonce: 19n,
+        signBuyerOrderWithSellerKey: true,
+      });
+      throw new Error("Expected buyer order signed by seller to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderSignatureMissing");
+    }
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
         buyerNonce: 10n,
         sellerNonce: 11n,
         signWrongSellerMessage: true,
       });
       throw new Error("Expected mismatched seller signature to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderSignatureMismatch");
+    }
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 20n,
+        sellerNonce: 21n,
+        swapSignatureMessages: true,
+      });
+      throw new Error("Expected swapped signature messages to be rejected");
     } catch (error) {
       expect(String(error)).to.include("SignedOrderSignatureMismatch");
     }
