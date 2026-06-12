@@ -3,7 +3,7 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 use lime_market::{Market, MarketStatus};
 use lime_vault::{MarketVault, PositionSide as VaultPositionSide, UserPosition};
 
-declare_id!("3YMsnQEW4koSRwLJw1gUeyf6S53GxNFQWSGjRr3NMjeo");
+declare_id!("5gchRUqZFCFKWrp1oUdWih6SavGdYoSrZuGwB6bz4hKB");
 
 const SCALE: u64 = 1_000_000;
 
@@ -17,6 +17,18 @@ pub mod lime_settlement {
     ) -> Result<()> {
         let protocol = &mut ctx.accounts.protocol_config;
         protocol.admin = ctx.accounts.admin.key();
+        protocol.resolver = resolver;
+        protocol.bump = ctx.bumps.protocol_config;
+        Ok(())
+    }
+
+    pub fn initialize_protocol_for(
+        ctx: Context<InitializeProtocol>,
+        resolver: Pubkey,
+        protocol_admin: Pubkey,
+    ) -> Result<()> {
+        let protocol = &mut ctx.accounts.protocol_config;
+        protocol.admin = protocol_admin;
         protocol.resolver = resolver;
         protocol.bump = ctx.bumps.protocol_config;
         Ok(())

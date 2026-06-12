@@ -12,6 +12,13 @@ function marketIdBuffer(marketId: bigint): Buffer {
   return buffer;
 }
 
+function nonceBuffer(nonce: bigint): Buffer {
+  const buffer = Buffer.alloc(16);
+  buffer.writeBigUInt64LE(nonce & ((1n << 64n) - 1n), 0);
+  buffer.writeBigUInt64LE(nonce >> 64n, 8);
+  return buffer;
+}
+
 function positionSideSeed(side: PositionSide): Buffer {
   return Buffer.from(side === "short" ? "short" : "long");
 }
@@ -50,6 +57,13 @@ function positionPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("position"), marketIdBuffer(marketId), owner.toBuffer(), positionSideSeed(side)],
+    programId,
+  );
+}
+
+function fillPda(programId: PublicKey, marketId: bigint, owner: PublicKey, nonce: bigint): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("fill"), marketIdBuffer(marketId), owner.toBuffer(), nonceBuffer(nonce)],
     programId,
   );
 }
@@ -109,11 +123,22 @@ describe("lime-onchain baseline", () => {
     expect(marketInstructionNames.has("mark_settled")).to.equal(true);
 
     const vaultInstructionNames = new Set(vaultIdl.instructions.map((i: any) => i.name));
+    const vaultTypeNames = new Set(vaultIdl.types.map((type: any) => type.name));
     expect(vaultInstructionNames.has("init_market_vault")).to.equal(true);
     expect(vaultInstructionNames.has("deposit_collateral")).to.equal(true);
     expect(vaultInstructionNames.has("withdraw_available_collateral")).to.equal(true);
     expect(vaultInstructionNames.has("withdraw_collateral")).to.equal(false);
     expect(vaultInstructionNames.has("transfer_for_settlement")).to.equal(true);
+    expect(vaultTypeNames.has("SignedOrder")).to.equal(true);
+    expect(vaultTypeNames.has("OrderSide")).to.equal(true);
+    expect(vaultTypeNames.has("OrderNetwork")).to.equal(true);
+
+    const settleTrade = vaultIdl.instructions.find((i: any) => i.name === "settle_trade");
+    const settleAccounts = new Map(settleTrade.accounts.map((account: any) => [account.name, account]));
+    expect(settleAccounts.has("backend_signer")).to.equal(false);
+    expect(settleAccounts.has("submitter")).to.equal(true);
+    expect(settleAccounts.has("buyer_fill")).to.equal(true);
+    expect(settleAccounts.has("seller_fill")).to.equal(true);
 
     const settlementInstructionNames = new Set(
       settlementIdl.instructions.map((i: any) => i.name),
@@ -156,6 +181,7 @@ describe("lime-onchain baseline", () => {
     );
 
     expect(vaultAccounts.has("MarketVault")).to.equal(true);
+    expect(vaultTypes.has("FillState")).to.equal(true);
     expect(vaultTypes.get("MarketVault")?.type.fields.map((field: any) => field.name)).to.include.members([
       "vault_authority",
       "settlement_authority",
@@ -200,6 +226,7 @@ describe("lime-onchain baseline", () => {
     const [collateral] = collateralPda(vaultProgramId, marketId, provider.wallet.publicKey);
     const [longPosition] = positionPda(vaultProgramId, marketId, provider.wallet.publicKey, "long");
     const [shortPosition] = positionPda(vaultProgramId, marketId, provider.wallet.publicKey, "short");
+    const [fill] = fillPda(vaultProgramId, marketId, provider.wallet.publicKey, 1n);
     const [vaultAuthority] = vaultAuthorityPda(settlementProgramId, marketId);
     const [claim] = claimPda(settlementProgramId, marketId, provider.wallet.publicKey, "long");
 
@@ -210,6 +237,7 @@ describe("lime-onchain baseline", () => {
     expect(collateral).to.be.instanceOf(PublicKey);
     expect(longPosition).to.be.instanceOf(PublicKey);
     expect(shortPosition).to.be.instanceOf(PublicKey);
+    expect(fill).to.be.instanceOf(PublicKey);
     expect(longPosition.equals(shortPosition)).to.equal(false);
     expect(vaultAuthority).to.be.instanceOf(PublicKey);
     expect(claim).to.be.instanceOf(PublicKey);
@@ -251,6 +279,32 @@ describe("lime-onchain baseline", () => {
     expect(settlementSource).to.include("if amount > 0");
     expect(settlementSource).to.include("receipt.claimed = true");
     expect(settlementSource).to.include("receipt.refunded = true");
+  });
+
+  it("allows devnet bootstrap to assign a browser-wallet protocol admin", async () => {
+    const marketSource = fs.readFileSync(
+      path.join(rootDir, "programs/lime-market/src/lib.rs"),
+      "utf8",
+    );
+    const settlementSource = fs.readFileSync(
+      path.join(rootDir, "programs/lime-settlement/src/lib.rs"),
+      "utf8",
+    );
+    const bootstrapScript = fs.readFileSync(
+      path.join(rootDir, "scripts/bootstrap-devnet.mjs"),
+      "utf8",
+    );
+
+    expect(marketSource).to.include("initialize_protocol_for");
+    expect(marketSource).to.include("protocol_admin: Pubkey");
+    expect(marketSource).to.include("config.admin = protocol_admin");
+
+    expect(settlementSource).to.include("initialize_protocol_for");
+    expect(settlementSource).to.include("protocol_admin: Pubkey");
+    expect(settlementSource).to.include("protocol.admin = protocol_admin");
+
+    expect(bootstrapScript).to.include("process.env.PROTOCOL_ADMIN");
+    expect(bootstrapScript).to.include("initializeProtocolFor");
   });
 
   it("enforces canonical market state transition map in tests", async () => {

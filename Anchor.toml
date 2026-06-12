@@ -6,9 +6,9 @@ skip-lint = false
 anchor_version = "0.32.1"
 
 [programs.localnet]
-lime_market = "7fWARazEH3S5r3xJaTd2hjKzpxSPHchzNtFKiYF1PRgM"
-lime_vault = "73C6Qi25C8owQGRKgrvfDkTXKLgyawSC5MXwAGHj7iMZ"
-lime_settlement = "3YMsnQEW4koSRwLJw1gUeyf6S53GxNFQWSGjRr3NMjeo"
+lime_market = "G2YAvLwHFmd4wgs45QScmBYpFthkEjhU34VKQ3HKMagk"
+lime_vault = "BY7MggeDqzyGgJnCQ34pF5pJA6kGUtNvFhaW4VHbFnLm"
+lime_settlement = "5gchRUqZFCFKWrp1oUdWih6SavGdYoSrZuGwB6bz4hKB"
 
 [registry]
 url = "https://api.apr.dev"

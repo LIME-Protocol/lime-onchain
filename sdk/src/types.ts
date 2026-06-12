@@ -1,6 +1,8 @@
 import type { PublicKey } from "@solana/web3.js";
 
 export type WalletChain = "solana-mainnet" | "solana-devnet" | "solana-localnet";
+export type SignedOrderSide = "buy" | "sell";
+export type SignedOrderNetwork = "mainnet-beta" | "devnet" | "localnet";
 
 export interface WalletProvider {
   connect(): Promise<string>;
@@ -33,8 +35,24 @@ export interface TradeExecutionInput {
   marketId: string;
   buyer: string | PublicKey;
   seller: string | PublicKey;
+  buyerNonce?: bigint;
+  sellerNonce?: bigint;
   quantity: number;
   priceScaled: number;
+}
+
+export interface SignedOrderInput {
+  version: number;
+  network: SignedOrderNetwork;
+  marketProgramId: PublicKey;
+  vaultProgramId: PublicKey;
+  marketId: bigint;
+  owner: PublicKey;
+  side: SignedOrderSide;
+  priceScaled: bigint;
+  quantity: bigint;
+  expirationTs: bigint;
+  nonce: bigint;
 }
 
 export interface OnchainTradeExecution {

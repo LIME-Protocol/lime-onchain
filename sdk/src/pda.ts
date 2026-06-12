@@ -7,6 +7,13 @@ function marketIdBuffer(marketId: bigint): Buffer {
   return buffer;
 }
 
+function nonceBuffer(nonce: bigint): Buffer {
+  const buffer = Buffer.alloc(16);
+  buffer.writeBigUInt64LE(nonce & ((1n << 64n) - 1n), 0);
+  buffer.writeBigUInt64LE(nonce >> 64n, 8);
+  return buffer;
+}
+
 export function marketPda(programId: PublicKey, marketId: bigint): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([Buffer.from("market"), marketIdBuffer(marketId)], programId);
 }
@@ -49,6 +56,18 @@ export function positionPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("position"), marketIdBuffer(marketId), owner.toBuffer(), positionSideSeed(side)],
+    programId,
+  );
+}
+
+export function fillPda(
+  programId: PublicKey,
+  marketId: bigint,
+  owner: PublicKey,
+  nonce: bigint,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("fill"), marketIdBuffer(marketId), owner.toBuffer(), nonceBuffer(nonce)],
     programId,
   );
 }

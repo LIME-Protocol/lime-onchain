@@ -1,0 +1,3 @@
+# Canonical Signed Order Shape
+
+The canonical Signed Order contains `version: u8`, `network`, `market_program_id: Pubkey`, `vault_program_id: Pubkey`, `market_id: u64`, `owner: Pubkey`, `side: Buy | Sell`, `price_scaled: u64`, `quantity: u64`, `expiration_ts: i64`, and `nonce: u128`. It must not include Matching Engine-derived fields such as Execution Price, buyer, seller, or Trade ID; Programs derive those from the validated order pair and fill details during Trade Execution. This keeps user authorization scoped to intent while preventing the Matching Engine from smuggling trusted execution facts into the signed payload.
