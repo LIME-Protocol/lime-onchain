@@ -4,6 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import type { LimeClient } from "./client.js";
 import {
   collateralPda,
+  fillPda,
   marketPda,
   positionPda,
   vaultAuthorityPda,
@@ -161,6 +162,20 @@ export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecutio
       marketIdBigInt,
       seller,
     );
+    const buyerNonce = input.buyerNonce ?? 0n;
+    const sellerNonce = input.sellerNonce ?? 0n;
+    const [buyerFill] = fillPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+      buyer,
+      buyerNonce,
+    );
+    const [sellerFill] = fillPda(
+      this.client.addresses.vaultProgramId,
+      marketIdBigInt,
+      seller,
+      sellerNonce,
+    );
     const [buyerPosition] = positionPda(
       this.client.addresses.vaultProgramId,
       marketIdBigInt,
@@ -180,15 +195,19 @@ export class SolanaCollateral implements OnchainCollateral, OnchainTradeExecutio
         new BN(input.marketId),
         buyer,
         seller,
+        new BN(buyerNonce.toString()),
+        new BN(sellerNonce.toString()),
         new BN(quantityUnits.toString()),
         new BN(Math.floor(input.priceScaled).toString()),
       )
       .accounts({
-        backendSigner: this.client.provider.wallet.publicKey,
+        submitter: this.client.provider.wallet.publicKey,
         market,
         marketVault,
         buyerCollateral,
         sellerCollateral,
+        buyerFill,
+        sellerFill,
         buyerPosition,
         sellerPosition,
       })

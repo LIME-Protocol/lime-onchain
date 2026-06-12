@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("7fWARazEH3S5r3xJaTd2hjKzpxSPHchzNtFKiYF1PRgM");
+declare_id!("G2YAvLwHFmd4wgs45QScmBYpFthkEjhU34VKQ3HKMagk");
 
 const SETTLEMENT_SOURCE_MAX_LEN: usize = 128;
 
@@ -16,6 +16,21 @@ pub mod lime_market {
 
         let config = &mut ctx.accounts.protocol_config;
         config.admin = ctx.accounts.admin.key();
+        config.fee_bps = fee_bps;
+        config.paused = false;
+        config.bump = ctx.bumps.protocol_config;
+        Ok(())
+    }
+
+    pub fn initialize_protocol_for(
+        ctx: Context<InitializeProtocol>,
+        fee_bps: u16,
+        protocol_admin: Pubkey,
+    ) -> Result<()> {
+        require!(fee_bps <= 10_000, MarketError::InvalidFeeBps);
+
+        let config = &mut ctx.accounts.protocol_config;
+        config.admin = protocol_admin;
         config.fee_bps = fee_bps;
         config.paused = false;
         config.bump = ctx.bumps.protocol_config;

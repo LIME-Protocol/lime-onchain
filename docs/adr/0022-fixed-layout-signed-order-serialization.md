@@ -1,0 +1,3 @@
+# Fixed-Layout Signed Order Serialization
+
+Signed Orders use a canonical fixed-layout binary serialization rather than JSON or runtime-dependent object encoding. The serialized message includes a domain tag, `version u8`, `network u8`, `market_program_id [32]`, `vault_program_id [32]`, `market_id u64 LE`, `owner [32]`, `side u8`, `price_scaled u64 LE`, `quantity u64 LE`, `expiration_ts i64 LE`, and `nonce u128 LE`. This gives Programs, SDK, and Market Operator systems byte-for-byte compatibility for Ed25519 signature verification and keeps the signing format small, deterministic, and audit-friendly.

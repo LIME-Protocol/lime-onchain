@@ -12,6 +12,14 @@ _Avoid_: Contract, smart contract
 The actor that creates a Market. In the MVP, Market creation is permissioned and controlled by LIME/Admin.
 _Avoid_: Any user as creator in MVP
 
+**Market Operator**:
+The actor or organization that integrates with LIME Programs to launch and operate Markets for users. A Market Operator may build its own Frontend, Backend, Order Book, and relayer flow, but LIME Programs remain the source of truth for Signed Orders, Collateral, Positions, Resolution, Settlement, Claims, and Refunds.
+_Avoid_: Treating the operator backend as protocol authority
+
+**Market Operator Allowlist**:
+The LIME/Admin-controlled set of Market Operator wallets that are authorized to create Markets. The allowlist gates Market creation without requiring end users to be permissioned.
+_Avoid_: Permissionless Market creation in the first cycle
+
 **Program**:
 A Solana on-chain executable that manages part of the LIME protocol. Programs are the Solana equivalent of what EVM developers often call smart contracts.
 _Avoid_: Contract
@@ -65,8 +73,8 @@ Market Collateral that belongs to a user and is not reserved by open Orders or a
 _Avoid_: Free balance
 
 **Reserved Collateral**:
-Market Collateral set aside for open Orders that are eligible to match. Reserved Collateral prevents matchable Orders from producing Trades that cannot be executed on-chain.
-_Avoid_: Position Collateral
+Off-chain accounting used by the Matching Engine or Backend to avoid offering Orders whose Collateral appears unavailable. Reserved Collateral improves UX and matching quality, but Programs do not trust it as a protocol guarantee.
+_Avoid_: Position Collateral, on-chain Collateral lock
 
 **Vault**:
 The on-chain custody mechanism that holds Collateral for settlement. Use Vault for the domain custody concept, not for every low-level Solana account involved in custody.
@@ -173,7 +181,7 @@ The act of recording a Trade and updating the affected Positions and Collateral.
 _Avoid_: Trade settlement
 
 **Trade Execution Authority**:
-The actor authorized to submit Trade Execution on-chain. In the MVP, this may be a trusted Backend or Matching Engine authority, provided user Orders authorize the Market, side, Price, and Quantity being executed.
+Any actor that submits Trade Execution on-chain. Trade Execution is permissionless when the submitted accounts and Signed Orders satisfy Program validation.
 _Avoid_: Resolver, user wallet
 
 **Order**:
@@ -184,13 +192,21 @@ _Avoid_: Position, transaction
 A Signed Order that can only match at a Price acceptable to the user-defined limit. Limit Order is the only Order type in the MVP.
 _Avoid_: Market order
 
+**Partial Fill**:
+A Trade Execution that fills only part of a Signed Order's Quantity. Programs track filled Quantity so a Signed Order can be filled multiple times without exceeding its authorized Quantity.
+_Avoid_: Treating fill-or-none as a protocol requirement
+
 **Fill-or-none**:
-The MVP matching rule that an Order either matches for its full Quantity or does not match at all.
-_Avoid_: Partial fill
+An Order Book policy where an Order either matches for its full Quantity or does not match at all. Fill-or-none may be used by a reference integration, but it is not the protocol rule for Signed Orders.
+_Avoid_: Protocol-level fill requirement
 
 **Signed Order**:
 An Order authorized by the user's wallet. A Signed Order gives the Matching Engine permission to match and execute only within its declared Market, side, Price, Quantity, expiration, and replay-protection constraints.
 _Avoid_: Backend-only order
+
+**Signing Domain**:
+The scope that makes a Signed Order valid only for its intended LIME protocol version, network, Programs, Market, owner, side, Price, Quantity, expiration, and replay-protection constraints.
+_Avoid_: Unscoped signature
 
 **Order Expiration**:
 The time after which a Signed Order is no longer valid for matching or Trade Execution.
@@ -241,7 +257,10 @@ Resolved domain rule: use **Trade Execution** for recording matched Trades. Rese
 Resolved domain rule: an Order should be matchable only after the required Collateral is deposited and reserved. When a matched Trade is recorded through Trade Execution, Reserved Collateral becomes Position Collateral.
 
 **Reserved Collateral source of truth**:
-Resolved MVP rule: Reserved Collateral is tracked by the off-chain Matching Engine, while Market Collateral custody remains on-chain. Available Collateral is derived from deposited Market Collateral minus Reserved Collateral and Position Collateral.
+Resolved protocol rule: Reserved Collateral is off-chain Matching Engine accounting only. Programs trust on-chain Available Collateral at Trade Execution time, not off-chain reservation state.
+
+**Fill behavior**:
+Resolved protocol rule: Signed Orders support Partial Fills. Programs must track filled Quantity and reject replay or overfill attempts; Fill-or-none is only an Order Book policy, not a protocol requirement.
 
 **Sell semantics**:
 Resolved MVP rule: a filled Sell Order opens or increases a Short Position. It does not close or reduce an existing Long Position.
@@ -259,10 +278,10 @@ Resolved MVP rule: the initial Resolver may be a LIME-controlled operational aut
 Resolved MVP rule: Resolution Source may be a human-readable description of the observation criterion. A structured schema can be introduced later for Oracle integration.
 
 **Trade Execution authority scope**:
-Resolved MVP rule: the Backend or Matching Engine may be trusted to submit Trade Execution on-chain, but Trades must be based on Signed Orders. User custody starts from wallet-authorized Orders and on-chain Collateral deposits; long term, stronger verification should limit what the authority can execute.
+Resolved protocol rule: Trade Execution is permissionless. Any actor may submit Trade Execution, but Programs validate Signed Orders, signatures, fill state, Execution Price, Quantity, and Collateral constraints before changing Positions.
 
 **Signed Order fields**:
-Resolved MVP rule: a Signed Order should identify Market, owner, side, Price, Quantity, Order Expiration, Order Nonce, maximum Collateral authorized, network, and order type. The first MVP may support only limit Orders.
+Resolved protocol rule: a Signed Order identifies the LIME order protocol version, network, Market Program, Vault Program, Market, owner, side, Price, Quantity, Order Expiration, and Order Nonce. The Order Nonce is a `u128` value generated off-chain by the SDK or user client.
 
 **Payout basis**:
 Resolved domain rule: Settlement payout is based on Position Quantity and the Market's Resolution payoff ratio. Cost Basis or collateral contributed should not be used as the payout basis.
@@ -271,13 +290,19 @@ Resolved domain rule: Settlement payout is based on Position Quantity and the Ma
 Resolved MVP rule: Signed Orders and the Order Book are persisted off-chain by the Matching Engine or backend. On-chain state records custody, Positions, Resolution, Settlement, Claims, and Refunds, not open Orders.
 
 **Trade ID scope**:
-Resolved MVP rule: each Trade should have a deterministic Trade ID. The Matching Engine must prevent duplicate execution by Trade ID; Program-level replay protection can be strengthened after the first MVP path.
+Resolved protocol rule: Trade ID may still support off-chain idempotency and observability, but Program-level replay and overfill protection comes from Signed Order validation and filled Quantity accounting.
 
 **Backend and Matching Engine boundary**:
 Resolved MVP rule: Backend is the general off-chain API used by the frontend; Matching Engine is the Backend module or service responsible for Order Book, Reserved Collateral, matching, and Trade generation. They may run in the same process in the MVP.
 
 **Market creation scope**:
-Resolved MVP rule: Market creation is permissioned and controlled by LIME/Admin. Permissionless or third-party Market creation is post-MVP.
+Resolved protocol rule: Market creation is permissioned through a LIME/Admin-controlled Market Operator Allowlist. Only allowlisted Market Operator wallets can create Markets in this cycle.
+
+**Market Operator scope**:
+Resolved protocol rule: a third-party Market Operator may build the user-facing Frontend and Backend that interact with LIME Programs. The Market Operator can coordinate user experience and submit on-chain transactions, but Programs enforce the protocol rules.
+
+**End-user custody flow**:
+Resolved protocol rule: end users may use a Market Operator's Frontend, but they still authorize custody actions such as Deposit Collateral, Withdraw, and Claim with wallet transactions. Trade Execution does not require the buyer or seller to sign the execution transaction; their authorization comes from Signed Orders.
 
 **Market initial status**:
 Resolved MVP rule: every Market starts as Preliminary and requires explicit LIME/Admin activation before Orders or Trade Execution are allowed.
@@ -290,7 +315,7 @@ _Avoid_: Treating participant count as defined before the participant concept is
 Resolved MVP rule: Limit Order is the only supported Order type in the MVP. Market Order and slippage-based execution are post-MVP concerns.
 
 **Fill scope**:
-Resolved MVP rule: the first MVP uses Fill-or-none matching. Partial fills are post-MVP.
+Resolved protocol rule: Signed Orders support Partial Fills. Fill-or-none is an Order Book policy, not a Program requirement.
 
 **MVP price matching**:
 Resolved MVP rule: a Buy Limit can match a Sell Limit when the Buy Price is greater than or equal to the Sell Price. The resulting Execution Price is the Sell Price.
@@ -347,7 +372,7 @@ Domain expert: "No. For the MVP it can be a human-readable observation criterion
 
 Developer: "Who signs Trade Execution?"
 
-Domain expert: "For the MVP, a trusted Backend or Matching Engine authority can submit Trade Execution, but it must execute within wallet-signed Orders."
+Domain expert: "Any actor may submit Trade Execution. Programs do not trust the submitter to define execution facts; they validate Signed Orders before Positions or Collateral change."
 
 Developer: "Does Settled mean every user already claimed?"
 
@@ -367,7 +392,7 @@ Domain expert: "Not conceptually. The Backend is the API surface; the Matching E
 
 Developer: "How do we prevent the same matched Trade from executing twice?"
 
-Domain expert: "Each Trade gets a deterministic Trade ID. The Matching Engine must enforce idempotency by Trade ID, and on-chain protection can be strengthened after the first MVP."
+Domain expert: "Programs track filled Quantity for each Signed Order and reject replay or overfill attempts. Trade ID can still help off-chain idempotency."
 
 Developer: "When does an Order become exposure?"
 
@@ -375,7 +400,7 @@ Domain expert: "Only after it matches into a Trade and Trade Execution records i
 
 Developer: "What must a Signed Order authorize?"
 
-Domain expert: "At minimum: Market, owner, side, Price, Quantity, expiration, nonce, maximum Collateral, network, and order type."
+Domain expert: "It authorizes one versioned LIME order intent for a specific network, Market Program, Vault Program, Market, owner, side, Price, Quantity, expiration, and nonce."
 
 Developer: "Can an Order match before collateral exists?"
 
@@ -383,7 +408,7 @@ Domain expert: "No. Collateral should be deposited first, reserved for open Orde
 
 Developer: "Does every open Order need an on-chain reservation?"
 
-Domain expert: "No, not for MVP. The Matching Engine tracks Reserved Collateral off-chain, while on-chain Market Collateral remains the custody limit."
+Domain expert: "No. The Matching Engine may track Reserved Collateral off-chain for UX, but Programs only trust on-chain Available Collateral when Trade Execution runs."
 
 Developer: "What does Price mean in a Trade?"
 

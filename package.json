@@ -8,6 +8,7 @@
   "scripts": {
     "build:sdk": "npm --workspace sdk run build",
     "bootstrap:devnet": "bash scripts/bootstrap-devnet.sh",
+    "rotate:program-ids": "node scripts/rotate-program-ids.mjs",
     "test:anchor": "ts-mocha -p ./tsconfig.json -t 1200000 tests/**/*.ts",
     "lint": "eslint . --ext .ts"
   },

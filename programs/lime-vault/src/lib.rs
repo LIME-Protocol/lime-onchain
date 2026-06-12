@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 use lime_market::{Market, MarketStatus};
 
-declare_id!("73C6Qi25C8owQGRKgrvfDkTXKLgyawSC5MXwAGHj7iMZ");
+declare_id!("BY7MggeDqzyGgJnCQ34pF5pJA6kGUtNvFhaW4VHbFnLm");
 
 const SCALE: u64 = 1_000_000;
 
@@ -171,6 +171,8 @@ pub mod lime_vault {
         market_id: u64,
         buyer: Pubkey,
         seller: Pubkey,
+        buyer_nonce: u128,
+        seller_nonce: u128,
         quantity: u64,
         price_scaled: u64,
     ) -> Result<()> {
@@ -179,10 +181,6 @@ pub mod lime_vault {
         let market = &ctx.accounts.market;
         require!(market.market_id == market_id, VaultError::MarketMismatch);
         require!(market.status == MarketStatus::Active, VaultError::MarketNotTradable);
-        require!(
-            ctx.accounts.backend_signer.key() == market.admin,
-            VaultError::UnauthorizedBackend
-        );
         require!(
             ctx.accounts.market_vault.market_id == market_id,
             VaultError::MarketMismatch
@@ -197,6 +195,32 @@ pub mod lime_vault {
         require!(buyer_collateral.owner == buyer, VaultError::PositionOwnerMismatch);
         require!(seller_collateral.owner == seller, VaultError::PositionOwnerMismatch);
         require!(buyer != seller, VaultError::SelfTradeDisabled);
+
+        let buyer_fill = &mut ctx.accounts.buyer_fill;
+        let seller_fill = &mut ctx.accounts.seller_fill;
+        if buyer_fill.owner == Pubkey::default() {
+            buyer_fill.market_id = market_id;
+            buyer_fill.owner = buyer;
+            buyer_fill.nonce = buyer_nonce;
+            buyer_fill.quantity = quantity;
+            buyer_fill.filled_quantity = 0;
+            buyer_fill.bump = ctx.bumps.buyer_fill;
+        }
+        if seller_fill.owner == Pubkey::default() {
+            seller_fill.market_id = market_id;
+            seller_fill.owner = seller;
+            seller_fill.nonce = seller_nonce;
+            seller_fill.quantity = quantity;
+            seller_fill.filled_quantity = 0;
+            seller_fill.bump = ctx.bumps.seller_fill;
+        }
+
+        require!(buyer_fill.market_id == market_id, VaultError::MarketMismatch);
+        require!(seller_fill.market_id == market_id, VaultError::MarketMismatch);
+        require!(buyer_fill.owner == buyer, VaultError::PositionOwnerMismatch);
+        require!(seller_fill.owner == seller, VaultError::PositionOwnerMismatch);
+        require!(buyer_fill.nonce == buyer_nonce, VaultError::FillNonceMismatch);
+        require!(seller_fill.nonce == seller_nonce, VaultError::FillNonceMismatch);
 
         if buyer_position.owner == Pubkey::default() {
             buyer_position.market_id = market_id;
@@ -261,6 +285,15 @@ pub mod lime_vault {
         seller_position.cost_basis = seller_position
             .cost_basis
             .checked_add(seller_notional)
+            .ok_or(VaultError::MathOverflow)?;
+
+        buyer_fill.filled_quantity = buyer_fill
+            .filled_quantity
+            .checked_add(quantity)
+            .ok_or(VaultError::MathOverflow)?;
+        seller_fill.filled_quantity = seller_fill
+            .filled_quantity
+            .checked_add(quantity)
             .ok_or(VaultError::MathOverflow)?;
 
         emit!(TradeSettled {
@@ -425,10 +458,10 @@ pub struct TransferForSettlement<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(market_id: u64, buyer: Pubkey, seller: Pubkey)]
+#[instruction(market_id: u64, buyer: Pubkey, seller: Pubkey, buyer_nonce: u128, seller_nonce: u128)]
 pub struct SettleTrade<'info> {
     #[account(mut)]
-    pub backend_signer: Signer<'info>,
+    pub submitter: Signer<'info>,
     pub market: Account<'info, Market>,
     #[account(
         mut,
@@ -450,7 +483,33 @@ pub struct SettleTrade<'info> {
     pub seller_collateral: Account<'info, UserCollateral>,
     #[account(
         init_if_needed,
-        payer = backend_signer,
+        payer = submitter,
+        space = 8 + FillState::INIT_SPACE,
+        seeds = [
+            b"fill",
+            market_id.to_le_bytes().as_ref(),
+            buyer.as_ref(),
+            buyer_nonce.to_le_bytes().as_ref()
+        ],
+        bump
+    )]
+    pub buyer_fill: Account<'info, FillState>,
+    #[account(
+        init_if_needed,
+        payer = submitter,
+        space = 8 + FillState::INIT_SPACE,
+        seeds = [
+            b"fill",
+            market_id.to_le_bytes().as_ref(),
+            seller.as_ref(),
+            seller_nonce.to_le_bytes().as_ref()
+        ],
+        bump
+    )]
+    pub seller_fill: Account<'info, FillState>,
+    #[account(
+        init_if_needed,
+        payer = submitter,
         space = 8 + UserPosition::INIT_SPACE,
         seeds = [
             b"position",
@@ -463,7 +522,7 @@ pub struct SettleTrade<'info> {
     pub buyer_position: Account<'info, UserPosition>,
     #[account(
         init_if_needed,
-        payer = backend_signer,
+        payer = submitter,
         space = 8 + UserPosition::INIT_SPACE,
         seeds = [
             b"position",
@@ -512,10 +571,59 @@ pub struct UserPosition {
     pub bump: u8,
 }
 
+#[account]
+#[derive(InitSpace)]
+pub struct FillState {
+    pub market_id: u64,
+    pub owner: Pubkey,
+    pub nonce: u128,
+    pub quantity: u64,
+    pub filled_quantity: u64,
+    pub bump: u8,
+}
+
+#[event]
+pub struct FillStateSchema {
+    pub state: FillState,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, PartialEq, Eq)]
 pub enum PositionSide {
     Long,
     Short,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, PartialEq, Eq)]
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, PartialEq, Eq)]
+pub enum OrderNetwork {
+    MainnetBeta,
+    Devnet,
+    Localnet,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace)]
+pub struct SignedOrder {
+    pub version: u8,
+    pub network: OrderNetwork,
+    pub market_program_id: Pubkey,
+    pub vault_program_id: Pubkey,
+    pub market_id: u64,
+    pub owner: Pubkey,
+    pub side: OrderSide,
+    pub price_scaled: u64,
+    pub quantity: u64,
+    pub expiration_ts: i64,
+    pub nonce: u128,
+}
+
+#[event]
+pub struct SignedOrderSchema {
+    pub order: SignedOrder,
 }
 
 impl PositionSide {
@@ -552,6 +660,8 @@ pub enum VaultError {
     MarketNotTradable,
     #[msg("Backend signer is not authorized")]
     UnauthorizedBackend,
+    #[msg("Fill PDA nonce does not match the submitted order nonce")]
+    FillNonceMismatch,
     #[msg("Invalid token mint")]
     InvalidMint,
     #[msg("Invalid token account owner")]

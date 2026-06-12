@@ -1,0 +1,3 @@
+# Programs Validate Signed Orders
+
+LIME no longer treats the Matching Engine as a trusted authority for Trade Execution. The Matching Engine may discover matches, maintain the reference Order Book, and submit transactions, but Programs must validate the Signed Orders, signatures, fill state, deterministic Execution Price, Quantity, and Collateral constraints before changing Positions. This shifts the on-chain protocol toward infrastructure as the product surface: the interoperability contract is the Signed Order plus Program validation path, while the Order Book and frontend are reference integrations.

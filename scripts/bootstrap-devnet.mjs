@@ -23,6 +23,9 @@ anchor.setProvider(provider);
 const marketProgramId = new PublicKey(process.env.MARKET_PROGRAM_ID ?? marketIdl.address);
 const vaultProgramId = new PublicKey(process.env.VAULT_PROGRAM_ID ?? vaultIdl.address);
 const settlementProgramId = new PublicKey(process.env.SETTLEMENT_PROGRAM_ID ?? settlementIdl.address);
+const protocolAdmin = new PublicKey(process.env.PROTOCOL_ADMIN ?? wallet.publicKey.toBase58());
+const settlementResolver = new PublicKey(process.env.SETTLEMENT_RESOLVER ?? protocolAdmin.toBase58());
+const canSignProtocolAdmin = protocolAdmin.equals(wallet.publicKey);
 
 const marketProgram = new anchor.Program(
   { ...marketIdl, address: marketProgramId.toBase58() },
@@ -70,8 +73,9 @@ const ensureIx = async (label, pda, fn) => {
 };
 
 await ensureIx("market protocol", marketProtocol, async () =>
-  marketProgram.methods
-    .initializeProtocol(50)
+  (process.env.PROTOCOL_ADMIN
+    ? marketProgram.methods.initializeProtocolFor(50, protocolAdmin)
+    : marketProgram.methods.initializeProtocol(50))
     .accounts({
       admin: wallet.publicKey,
       protocolConfig: marketProtocol,
@@ -81,8 +85,9 @@ await ensureIx("market protocol", marketProtocol, async () =>
 );
 
 await ensureIx("settlement protocol", settlementProtocol, async () =>
-  settlementProgram.methods
-    .initializeProtocol(wallet.publicKey)
+  (process.env.PROTOCOL_ADMIN
+    ? settlementProgram.methods.initializeProtocolFor(settlementResolver, protocolAdmin)
+    : settlementProgram.methods.initializeProtocol(settlementResolver))
     .accounts({
       admin: wallet.publicKey,
       protocolConfig: settlementProtocol,
@@ -90,6 +95,14 @@ await ensureIx("settlement protocol", settlementProtocol, async () =>
     })
     .rpc(),
 );
+
+if (!canSignProtocolAdmin) {
+  console.log(
+    `[skip] smoke market requires protocol admin signature; deploy wallet ${wallet.publicKey.toBase58()} cannot sign for ${protocolAdmin.toBase58()}`,
+  );
+  printEnv();
+  process.exit(0);
+}
 
 await ensureIx("sample market", marketPda, async () => {
   const resolutionTs = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60;
@@ -172,10 +185,16 @@ await ensureIx("market settlement", vaultAuthority, async () =>
     .rpc(),
 );
 
-console.log("\nDevnet bootstrap complete. Use these frontend env values:");
-console.log(`VITE_SOLANA_RPC_URL=${rpcUrl}`);
-console.log(`VITE_SOLANA_USDC_MINT=${usdcMint.toBase58()}`);
-console.log(`VITE_LIME_MARKET_PROGRAM_ID=${marketProgramId.toBase58()}`);
-console.log(`VITE_LIME_VAULT_PROGRAM_ID=${vaultProgramId.toBase58()}`);
-console.log(`VITE_LIME_SETTLEMENT_PROGRAM_ID=${settlementProgramId.toBase58()}`);
-console.log(`VITE_LIME_DEFAULT_MARKET_ID=${marketId.toString()}`);
+printEnv();
+
+function printEnv() {
+  console.log("\nDevnet bootstrap complete. Use these frontend env values:");
+  console.log(`VITE_SOLANA_RPC_URL=${rpcUrl}`);
+  console.log(`VITE_SOLANA_USDC_MINT=${usdcMint.toBase58()}`);
+  console.log(`VITE_LIME_MARKET_PROGRAM_ID=${marketProgramId.toBase58()}`);
+  console.log(`VITE_LIME_VAULT_PROGRAM_ID=${vaultProgramId.toBase58()}`);
+  console.log(`VITE_LIME_SETTLEMENT_PROGRAM_ID=${settlementProgramId.toBase58()}`);
+  console.log(`VITE_LIME_DEFAULT_MARKET_ID=${marketId.toString()}`);
+  console.log(`PROTOCOL_ADMIN=${protocolAdmin.toBase58()}`);
+  console.log(`SETTLEMENT_RESOLVER=${settlementResolver.toBase58()}`);
+}

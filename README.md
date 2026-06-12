@@ -56,6 +56,16 @@ These interfaces map to the frontend abstractions in `lime-mvp/src/services/wall
 1. Set wallet and RPC if needed:
    - `export SOLANA_KEYPAIR=~/.config/solana/id.json`
    - `export SOLANA_RPC_URL=https://api.devnet.solana.com`
-2. Run bootstrap:
+2. To redeploy to fresh program IDs, rotate local program keypairs:
+   - `npm run rotate:program-ids`
+3. Set the browser wallet that should control admin UI actions:
+   - `export PROTOCOL_ADMIN=<phantom-or-solflare-admin-pubkey>`
+   - Optional: `export SETTLEMENT_RESOLVER=<resolver-pubkey>`
+4. Run bootstrap:
    - `npm run bootstrap:devnet`
-3. Copy the printed `VITE_...` vars to `lime-mvp/.env`.
+5. Copy the printed `VITE_...` vars to the frontend `.env`.
+
+When `PROTOCOL_ADMIN` differs from the deploy wallet, bootstrap initializes protocol
+authority to that browser wallet and skips the smoke market, because market creation
+requires the protocol admin signature. Create and activate the first market from the
+admin UI after copying the new program IDs.
