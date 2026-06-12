@@ -1,10 +1,12 @@
 import * as anchor from "@coral-xyz/anchor";
 import { expect } from "chai";
 import {
+  Ed25519Program,
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
   SystemProgram,
+  Transaction,
 } from "@solana/web3.js";
 import {
   createMint,
@@ -15,6 +17,10 @@ import {
 } from "@solana/spl-token";
 import fs from "fs";
 import path from "path";
+import {
+  encodeSignedOrder,
+  type SignedOrderInput,
+} from "../sdk/src/signed-order";
 
 function marketIdBuffer(marketId: bigint): Buffer {
   const buffer = Buffer.alloc(8);
@@ -103,6 +109,165 @@ function refundPda(
 
 function isLocalProviderUrl(url: string | undefined): boolean {
   return !!url && (url.includes("127.0.0.1") || url.includes("localhost"));
+}
+
+const SYSVAR_INSTRUCTIONS_PUBKEY = new PublicKey("Sysvar1nstructions1111111111111111111111111");
+
+function anchorNetwork(network: SignedOrderInput["network"]): Record<string, Record<string, never>> {
+  if (network === "mainnet-beta") return { mainnetBeta: {} };
+  if (network === "devnet") return { devnet: {} };
+  return { localnet: {} };
+}
+
+function anchorSide(side: SignedOrderInput["side"]): Record<string, Record<string, never>> {
+  return side === "buy" ? { buy: {} } : { sell: {} };
+}
+
+function anchorSignedOrder(order: SignedOrderInput): Record<string, unknown> {
+  return {
+    version: order.version,
+    network: anchorNetwork(order.network),
+    marketProgramId: order.marketProgramId,
+    vaultProgramId: order.vaultProgramId,
+    marketId: new anchor.BN(order.marketId.toString()),
+    owner: order.owner,
+    side: anchorSide(order.side),
+    priceScaled: new anchor.BN(order.priceScaled.toString()),
+    quantity: new anchor.BN(order.quantity.toString()),
+    expirationTs: new anchor.BN(order.expirationTs.toString()),
+    nonce: new anchor.BN(order.nonce.toString()),
+  };
+}
+
+function signedOrder(input: {
+  marketProgramId: PublicKey;
+  vaultProgramId: PublicKey;
+  marketId: bigint;
+  owner: PublicKey;
+  side: SignedOrderInput["side"];
+  priceScaled: bigint;
+  quantity: bigint;
+  expirationTs?: bigint;
+  nonce: bigint;
+}): SignedOrderInput {
+  return {
+    version: 1,
+    network: "localnet",
+    marketProgramId: input.marketProgramId,
+    vaultProgramId: input.vaultProgramId,
+    marketId: input.marketId,
+    owner: input.owner,
+    side: input.side,
+    priceScaled: input.priceScaled,
+    quantity: input.quantity,
+    expirationTs: input.expirationTs ?? BigInt(Math.floor(Date.now() / 1000) + 3600),
+    nonce: input.nonce,
+  };
+}
+
+async function settleSignedTrade(input: {
+  provider: anchor.AnchorProvider;
+  vaultProgram: anchor.Program;
+  marketProgramId: PublicKey;
+  vaultProgramId: PublicKey;
+  market: PublicKey;
+  marketVault: PublicKey;
+  buyer: Keypair;
+  seller: Keypair;
+  buyerCollateral: PublicKey;
+  sellerCollateral: PublicKey;
+  marketId: bigint;
+  quantity: bigint;
+  buyerPriceScaled?: bigint;
+  sellerPriceScaled: bigint;
+  buyerNonce: bigint;
+  sellerNonce: bigint;
+  buyerOrderOverride?: Partial<SignedOrderInput>;
+  sellerOrderOverride?: Partial<SignedOrderInput>;
+  omitBuyerSignature?: boolean;
+  signWrongSellerMessage?: boolean;
+}): Promise<{
+  buyerOrder: SignedOrderInput;
+  sellerOrder: SignedOrderInput;
+  buyerPosition: PublicKey;
+  sellerPosition: PublicKey;
+  buyerFill: PublicKey;
+  sellerFill: PublicKey;
+  signature: string;
+}> {
+  const buyerOrder = {
+    ...signedOrder({
+      marketProgramId: input.marketProgramId,
+      vaultProgramId: input.vaultProgramId,
+      marketId: input.marketId,
+      owner: input.buyer.publicKey,
+      side: "buy",
+      priceScaled: input.buyerPriceScaled ?? input.sellerPriceScaled,
+      quantity: input.quantity,
+      nonce: input.buyerNonce,
+    }),
+    ...input.buyerOrderOverride,
+  };
+  const sellerOrder = {
+    ...signedOrder({
+      marketProgramId: input.marketProgramId,
+      vaultProgramId: input.vaultProgramId,
+      marketId: input.marketId,
+      owner: input.seller.publicKey,
+      side: "sell",
+      priceScaled: input.sellerPriceScaled,
+      quantity: input.quantity,
+      nonce: input.sellerNonce,
+    }),
+    ...input.sellerOrderOverride,
+  };
+  const [buyerFill] = fillPda(input.vaultProgramId, buyerOrder.marketId, buyerOrder.owner, buyerOrder.nonce);
+  const [sellerFill] = fillPda(input.vaultProgramId, sellerOrder.marketId, sellerOrder.owner, sellerOrder.nonce);
+  const [buyerPosition] = positionPda(input.vaultProgramId, buyerOrder.marketId, buyerOrder.owner, "long");
+  const [sellerPosition] = positionPda(input.vaultProgramId, sellerOrder.marketId, sellerOrder.owner, "short");
+  const transaction = new Transaction();
+
+  if (!input.omitBuyerSignature) {
+    transaction.add(
+      Ed25519Program.createInstructionWithPrivateKey({
+        privateKey: input.buyer.secretKey,
+        message: encodeSignedOrder(buyerOrder),
+      }),
+    );
+  }
+  transaction.add(
+    Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: input.seller.secretKey,
+      message: input.signWrongSellerMessage
+        ? encodeSignedOrder({ ...sellerOrder, priceScaled: sellerOrder.priceScaled + 1n })
+        : encodeSignedOrder(sellerOrder),
+    }),
+  );
+  transaction.add(
+    await input.vaultProgram.methods
+      .settleTrade(
+        anchorSignedOrder(buyerOrder),
+        anchorSignedOrder(sellerOrder),
+        new anchor.BN(input.quantity.toString()),
+      )
+      .accounts({
+        submitter: input.provider.wallet.publicKey,
+        market: input.market,
+        marketVault: input.marketVault,
+        buyerCollateral: input.buyerCollateral,
+        sellerCollateral: input.sellerCollateral,
+        buyerFill,
+        sellerFill,
+        buyerPosition,
+        sellerPosition,
+        instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction(),
+  );
+
+  const signature = await input.provider.sendAndConfirm(transaction, []);
+  return { buyerOrder, sellerOrder, buyerPosition, sellerPosition, buyerFill, sellerFill, signature };
 }
 
 describe("collateral integration", () => {
@@ -293,7 +458,7 @@ describe("collateral integration", () => {
     expect(vaultTokenAccountAfter.amount).to.equal(depositAmount - withdrawAmount);
   });
 
-  it("settles a backend-signed trade into long and short position accounts", async () => {
+  it("settles a signed-order trade into long and short position accounts", async () => {
     expect(payer).to.not.equal(undefined);
 
     const marketProgramId = new PublicKey(marketIdl.address);
@@ -470,54 +635,144 @@ describe("collateral integration", () => {
       .signers([seller])
       .rpc();
 
-    const [buyerPosition] = positionPda(vaultProgramId, marketId, buyer.publicKey, "long");
-    const [sellerPosition] = positionPda(vaultProgramId, marketId, seller.publicKey, "short");
-
     try {
-      await vaultProgram.methods
-        .settleTrade(
-          new anchor.BN(marketId.toString()),
-          buyer.publicKey,
-          seller.publicKey,
-          new anchor.BN(quantity.toString()),
-          new anchor.BN(priceScaled.toString()),
-        )
-        .accounts({
-          backendSigner: buyer.publicKey,
-          market,
-          marketVault,
-          buyerCollateral,
-          sellerCollateral,
-          buyerPosition,
-          sellerPosition,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([buyer])
-        .rpc();
-      throw new Error("Expected unauthorized backend signer to be rejected");
-    } catch (error) {
-      expect(String(error)).to.include("UnauthorizedBackend");
-    }
-
-    await vaultProgram.methods
-      .settleTrade(
-        new anchor.BN(marketId.toString()),
-        buyer.publicKey,
-        seller.publicKey,
-        new anchor.BN(quantity.toString()),
-        new anchor.BN(priceScaled.toString()),
-      )
-      .accounts({
-        backendSigner: payer.publicKey,
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
         market,
         marketVault,
+        buyer,
+        seller,
         buyerCollateral,
         sellerCollateral,
-        buyerPosition,
-        sellerPosition,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 1n,
+        sellerNonce: 2n,
+        omitBuyerSignature: true,
+      });
+      throw new Error("Expected missing buyer signature to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderSignatureMissing");
+    }
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 10n,
+        sellerNonce: 11n,
+        signWrongSellerMessage: true,
+      });
+      throw new Error("Expected mismatched seller signature to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderSignatureMismatch");
+    }
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 12n,
+        sellerNonce: 13n,
+        buyerOrderOverride: {
+          expirationTs: BigInt(Math.floor(Date.now() / 1000) - 1),
+        },
+      });
+      throw new Error("Expected expired buyer order to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderExpired");
+    }
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        buyerPriceScaled: priceScaled - 1n,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 14n,
+        sellerNonce: 15n,
+      });
+      throw new Error("Expected uncrossed order pair to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderNotCrossed");
+    }
+
+    const { buyerPosition, sellerPosition } = await settleSignedTrade({
+      provider,
+      vaultProgram,
+      marketProgramId,
+      vaultProgramId,
+      market,
+      marketVault,
+      buyer,
+      seller,
+      buyerCollateral,
+      sellerCollateral,
+      marketId,
+      quantity,
+      sellerPriceScaled: priceScaled,
+      buyerNonce: 1n,
+      sellerNonce: 2n,
+    });
+
+    try {
+      await settleSignedTrade({
+        provider,
+        vaultProgram,
+        marketProgramId,
+        vaultProgramId,
+        market,
+        marketVault,
+        buyer,
+        seller,
+        buyerCollateral,
+        sellerCollateral,
+        marketId,
+        quantity,
+        sellerPriceScaled: priceScaled,
+        buyerNonce: 1n,
+        sellerNonce: 2n,
+      });
+      throw new Error("Expected overfill to be rejected");
+    } catch (error) {
+      expect(String(error)).to.include("SignedOrderOverfilled");
+    }
 
     try {
       await vaultProgram.methods
@@ -764,27 +1019,23 @@ describe("collateral integration", () => {
       .signers([seller])
       .rpc();
 
-    const [buyerPosition] = positionPda(vaultProgramId, marketId, buyer.publicKey, "long");
-    const [sellerPosition] = positionPda(vaultProgramId, marketId, seller.publicKey, "short");
-    await vaultProgram.methods
-      .settleTrade(
-        new anchor.BN(marketId.toString()),
-        buyer.publicKey,
-        seller.publicKey,
-        new anchor.BN(quantity.toString()),
-        new anchor.BN(priceScaled.toString()),
-      )
-      .accounts({
-        backendSigner: payer.publicKey,
-        market,
-        marketVault,
-        buyerCollateral,
-        sellerCollateral,
-        buyerPosition,
-        sellerPosition,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+    const { buyerPosition, sellerPosition } = await settleSignedTrade({
+      provider,
+      vaultProgram,
+      marketProgramId,
+      vaultProgramId,
+      market,
+      marketVault,
+      buyer,
+      seller,
+      buyerCollateral,
+      sellerCollateral,
+      marketId,
+      quantity,
+      sellerPriceScaled: priceScaled,
+      buyerNonce: 3n,
+      sellerNonce: 4n,
+    });
 
     await marketProgram.methods
       .closeMarket()
@@ -1049,27 +1300,23 @@ describe("collateral integration", () => {
       .signers([seller])
       .rpc();
 
-    const [buyerPosition] = positionPda(vaultProgramId, marketId, buyer.publicKey, "long");
-    const [sellerPosition] = positionPda(vaultProgramId, marketId, seller.publicKey, "short");
-    await vaultProgram.methods
-      .settleTrade(
-        new anchor.BN(marketId.toString()),
-        buyer.publicKey,
-        seller.publicKey,
-        new anchor.BN(quantity.toString()),
-        new anchor.BN(priceScaled.toString()),
-      )
-      .accounts({
-        backendSigner: payer.publicKey,
-        market,
-        marketVault,
-        buyerCollateral,
-        sellerCollateral,
-        buyerPosition,
-        sellerPosition,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+    const { buyerPosition, sellerPosition } = await settleSignedTrade({
+      provider,
+      vaultProgram,
+      marketProgramId,
+      vaultProgramId,
+      market,
+      marketVault,
+      buyer,
+      seller,
+      buyerCollateral,
+      sellerCollateral,
+      marketId,
+      quantity,
+      sellerPriceScaled: priceScaled,
+      buyerNonce: 5n,
+      sellerNonce: 6n,
+    });
 
     await marketProgram.methods
       .cancelMarket()

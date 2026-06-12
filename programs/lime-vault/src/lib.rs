@@ -1,4 +1,7 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
+};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 use lime_market::{Market, MarketStatus};
 
@@ -172,17 +175,31 @@ pub mod lime_vault {
 
     pub fn settle_trade(
         ctx: Context<SettleTrade>,
-        market_id: u64,
-        buyer: Pubkey,
-        seller: Pubkey,
-        buyer_nonce: u128,
-        seller_nonce: u128,
+        buyer_order: SignedOrder,
+        seller_order: SignedOrder,
         quantity: u64,
-        price_scaled: u64,
     ) -> Result<()> {
-        require!(quantity > 0, VaultError::InvalidAmount);
-        require!(price_scaled <= SCALE, VaultError::InvalidPrice);
         let market = &ctx.accounts.market;
+        let market_id = buyer_order.market_id;
+        let buyer = buyer_order.owner;
+        let seller = seller_order.owner;
+        validate_order_pair(
+            &buyer_order,
+            &seller_order,
+            quantity,
+            *market.to_account_info().owner,
+            *ctx.program_id,
+            Clock::get()?.unix_timestamp,
+        )?;
+        assert_signed_order_ed25519_verified(
+            &ctx.accounts.instructions.to_account_info(),
+            &buyer_order,
+        )?;
+        assert_signed_order_ed25519_verified(
+            &ctx.accounts.instructions.to_account_info(),
+            &seller_order,
+        )?;
+
         require!(market.market_id == market_id, VaultError::MarketMismatch);
         require!(
             market.status == MarketStatus::Active,
@@ -191,6 +208,10 @@ pub mod lime_vault {
         require!(
             ctx.accounts.market_vault.market_id == market_id,
             VaultError::MarketMismatch
+        );
+        require!(
+            seller_order.market_id == market_id,
+            VaultError::SignedOrderMarketMismatch
         );
 
         let buyer_position = &mut ctx.accounts.buyer_position;
@@ -220,16 +241,16 @@ pub mod lime_vault {
         if buyer_fill.owner == Pubkey::default() {
             buyer_fill.market_id = market_id;
             buyer_fill.owner = buyer;
-            buyer_fill.nonce = buyer_nonce;
-            buyer_fill.quantity = quantity;
+            buyer_fill.nonce = buyer_order.nonce;
+            buyer_fill.quantity = buyer_order.quantity;
             buyer_fill.filled_quantity = 0;
             buyer_fill.bump = ctx.bumps.buyer_fill;
         }
         if seller_fill.owner == Pubkey::default() {
             seller_fill.market_id = market_id;
             seller_fill.owner = seller;
-            seller_fill.nonce = seller_nonce;
-            seller_fill.quantity = quantity;
+            seller_fill.nonce = seller_order.nonce;
+            seller_fill.quantity = seller_order.quantity;
             seller_fill.filled_quantity = 0;
             seller_fill.bump = ctx.bumps.seller_fill;
         }
@@ -248,13 +269,15 @@ pub mod lime_vault {
             VaultError::PositionOwnerMismatch
         );
         require!(
-            buyer_fill.nonce == buyer_nonce,
+            buyer_fill.nonce == buyer_order.nonce,
             VaultError::FillNonceMismatch
         );
         require!(
-            seller_fill.nonce == seller_nonce,
+            seller_fill.nonce == seller_order.nonce,
             VaultError::FillNonceMismatch
         );
+        assert_fill_capacity(buyer_fill, &buyer_order, quantity)?;
+        assert_fill_capacity(seller_fill, &seller_order, quantity)?;
 
         if buyer_position.owner == Pubkey::default() {
             buyer_position.market_id = market_id;
@@ -294,6 +317,7 @@ pub mod lime_vault {
             VaultError::InvalidSideForTrade
         );
 
+        let price_scaled = seller_order.price_scaled;
         let buyer_notional = quantity
             .checked_mul(price_scaled)
             .ok_or(VaultError::MathOverflow)?
@@ -365,7 +389,7 @@ pub struct InitMarketVault<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub usdc_mint: Account<'info, Mint>,
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     #[account(
         seeds = [b"vault_authority", market_id.to_le_bytes().as_ref()],
         bump
@@ -379,7 +403,7 @@ pub struct InitMarketVault<'info> {
         seeds = [b"vault", market_id.to_le_bytes().as_ref()],
         bump
     )]
-    pub market_vault: Account<'info, MarketVault>,
+    pub market_vault: Box<Account<'info, MarketVault>>,
     #[account(
         mut,
         constraint = vault_token_account.mint == usdc_mint.key() @ VaultError::InvalidMint,
@@ -510,81 +534,108 @@ pub struct TransferForSettlement<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(market_id: u64, buyer: Pubkey, seller: Pubkey, buyer_nonce: u128, seller_nonce: u128)]
+#[instruction(buyer_order: SignedOrder, seller_order: SignedOrder, quantity: u64)]
 pub struct SettleTrade<'info> {
     #[account(mut)]
     pub submitter: Signer<'info>,
     pub market: Account<'info, Market>,
     #[account(
         mut,
-        seeds = [b"vault", market_id.to_le_bytes().as_ref()],
+        seeds = [b"vault", buyer_order.market_id.to_le_bytes().as_ref()],
         bump = market_vault.bump
     )]
     pub market_vault: Account<'info, MarketVault>,
     #[account(
         mut,
-        seeds = [b"collateral", market_id.to_le_bytes().as_ref(), buyer.as_ref()],
+        seeds = [
+            b"collateral",
+            buyer_order.market_id.to_le_bytes().as_ref(),
+            buyer_order.owner.as_ref()
+        ],
         bump = buyer_collateral.bump
     )]
-    pub buyer_collateral: Account<'info, UserCollateral>,
+    pub buyer_collateral: Box<Account<'info, UserCollateral>>,
     #[account(
         mut,
-        seeds = [b"collateral", market_id.to_le_bytes().as_ref(), seller.as_ref()],
+        seeds = [
+            b"collateral",
+            seller_order.market_id.to_le_bytes().as_ref(),
+            seller_order.owner.as_ref()
+        ],
         bump = seller_collateral.bump
     )]
-    pub seller_collateral: Account<'info, UserCollateral>,
+    pub seller_collateral: Box<Account<'info, UserCollateral>>,
+    /// CHECK: Solana instructions sysvar used to verify prior Ed25519 instructions.
+    #[account(
+        address = anchor_lang::solana_program::sysvar::instructions::ID,
+        constraint = buyer_order.market_id == seller_order.market_id @ VaultError::SignedOrderMarketMismatch,
+        constraint = buyer_order.market_id == market.market_id @ VaultError::MarketMismatch,
+        constraint = buyer_order.market_program_id == *market.to_account_info().owner @ VaultError::SignedOrderProgramMismatch,
+        constraint = seller_order.market_program_id == *market.to_account_info().owner @ VaultError::SignedOrderProgramMismatch,
+        constraint = buyer_order.vault_program_id == crate::ID @ VaultError::SignedOrderProgramMismatch,
+        constraint = seller_order.vault_program_id == crate::ID @ VaultError::SignedOrderProgramMismatch,
+        constraint = signed_order_not_expired(&buyer_order) @ VaultError::SignedOrderExpired,
+        constraint = signed_order_not_expired(&seller_order) @ VaultError::SignedOrderExpired,
+        constraint = signed_order_pair_shape_is_valid(&buyer_order, &seller_order, quantity) @ VaultError::InvalidSignedOrderPair,
+        constraint = seller_order.price_scaled <= buyer_order.price_scaled @ VaultError::SignedOrderNotCrossed,
+        constraint = signed_order_owner_signature_exists(&instructions.to_account_info(), &buyer_order) @ VaultError::SignedOrderSignatureMissing,
+        constraint = signed_order_owner_signature_exists(&instructions.to_account_info(), &seller_order) @ VaultError::SignedOrderSignatureMissing,
+        constraint = signed_order_full_signature_exists(&instructions.to_account_info(), &buyer_order) @ VaultError::SignedOrderSignatureMismatch,
+        constraint = signed_order_full_signature_exists(&instructions.to_account_info(), &seller_order) @ VaultError::SignedOrderSignatureMismatch
+    )]
+    pub instructions: UncheckedAccount<'info>,
     #[account(
         init_if_needed,
         payer = submitter,
         space = 8 + FillState::INIT_SPACE,
         seeds = [
             b"fill",
-            market_id.to_le_bytes().as_ref(),
-            buyer.as_ref(),
-            buyer_nonce.to_le_bytes().as_ref()
+            buyer_order.market_id.to_le_bytes().as_ref(),
+            buyer_order.owner.as_ref(),
+            buyer_order.nonce.to_le_bytes().as_ref()
         ],
         bump
     )]
-    pub buyer_fill: Account<'info, FillState>,
+    pub buyer_fill: Box<Account<'info, FillState>>,
     #[account(
         init_if_needed,
         payer = submitter,
         space = 8 + FillState::INIT_SPACE,
         seeds = [
             b"fill",
-            market_id.to_le_bytes().as_ref(),
-            seller.as_ref(),
-            seller_nonce.to_le_bytes().as_ref()
+            seller_order.market_id.to_le_bytes().as_ref(),
+            seller_order.owner.as_ref(),
+            seller_order.nonce.to_le_bytes().as_ref()
         ],
         bump
     )]
-    pub seller_fill: Account<'info, FillState>,
+    pub seller_fill: Box<Account<'info, FillState>>,
     #[account(
         init_if_needed,
         payer = submitter,
         space = 8 + UserPosition::INIT_SPACE,
         seeds = [
             b"position",
-            market_id.to_le_bytes().as_ref(),
-            buyer.as_ref(),
+            buyer_order.market_id.to_le_bytes().as_ref(),
+            buyer_order.owner.as_ref(),
             PositionSide::Long.seed()
         ],
         bump
     )]
-    pub buyer_position: Account<'info, UserPosition>,
+    pub buyer_position: Box<Account<'info, UserPosition>>,
     #[account(
         init_if_needed,
         payer = submitter,
         space = 8 + UserPosition::INIT_SPACE,
         seeds = [
             b"position",
-            market_id.to_le_bytes().as_ref(),
-            seller.as_ref(),
+            seller_order.market_id.to_le_bytes().as_ref(),
+            seller_order.owner.as_ref(),
             PositionSide::Short.seed()
         ],
         bump
     )]
-    pub seller_position: Account<'info, UserPosition>,
+    pub seller_position: Box<Account<'info, UserPosition>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -855,6 +906,213 @@ fn validate_signed_order_values(order: &SignedOrder) -> Result<()> {
     Ok(())
 }
 
+fn validate_order_pair(
+    buyer_order: &SignedOrder,
+    seller_order: &SignedOrder,
+    quantity: u64,
+    expected_market_program_id: Pubkey,
+    expected_vault_program_id: Pubkey,
+    now_ts: i64,
+) -> Result<()> {
+    require!(quantity > 0, VaultError::InvalidAmount);
+    validate_signed_order(
+        buyer_order,
+        OrderNetwork::Localnet,
+        expected_market_program_id,
+        expected_vault_program_id,
+        buyer_order.market_id,
+        now_ts,
+    )?;
+    validate_signed_order(
+        seller_order,
+        OrderNetwork::Localnet,
+        expected_market_program_id,
+        expected_vault_program_id,
+        buyer_order.market_id,
+        now_ts,
+    )?;
+    require!(
+        buyer_order.side == OrderSide::Buy,
+        VaultError::InvalidSignedOrderPair
+    );
+    require!(
+        seller_order.side == OrderSide::Sell,
+        VaultError::InvalidSignedOrderPair
+    );
+    require!(
+        buyer_order.owner != seller_order.owner,
+        VaultError::SelfTradeDisabled
+    );
+    require!(
+        seller_order.price_scaled <= buyer_order.price_scaled,
+        VaultError::SignedOrderNotCrossed
+    );
+    require!(
+        quantity <= buyer_order.quantity && quantity <= seller_order.quantity,
+        VaultError::SignedOrderOverfilled
+    );
+    Ok(())
+}
+
+fn assert_fill_capacity(fill: &FillState, order: &SignedOrder, quantity: u64) -> Result<()> {
+    require!(fill.quantity == order.quantity, VaultError::InvalidSignedOrderPair);
+    let new_filled_quantity = fill
+        .filled_quantity
+        .checked_add(quantity)
+        .ok_or(VaultError::MathOverflow)?;
+    require!(
+        new_filled_quantity <= order.quantity,
+        VaultError::SignedOrderOverfilled
+    );
+    Ok(())
+}
+
+fn assert_signed_order_ed25519_verified(
+    instructions_account: &AccountInfo,
+    order: &SignedOrder,
+) -> Result<()> {
+    let message = encode_signed_order(order)?;
+    let current_index = load_current_index_checked(instructions_account)
+        .map_err(|_| error!(VaultError::SignedOrderSignatureMissing))?;
+    let mut saw_owner_signature = false;
+
+    for index in 0..current_index {
+        let instruction = load_instruction_at_checked(index as usize, instructions_account)
+            .map_err(|_| error!(VaultError::SignedOrderSignatureMissing))?;
+        if instruction.program_id != pubkey!("Ed25519SigVerify111111111111111111111111111") {
+            continue;
+        }
+        match ed25519_instruction_matches(&instruction.data, order.owner, &message) {
+            Ed25519Match::Full => return Ok(()),
+            Ed25519Match::OwnerOnly => saw_owner_signature = true,
+            Ed25519Match::None => {}
+        }
+    }
+
+    if saw_owner_signature {
+        err!(VaultError::SignedOrderSignatureMismatch)
+    } else {
+        err!(VaultError::SignedOrderSignatureMissing)
+    }
+}
+
+fn signed_order_not_expired(order: &SignedOrder) -> bool {
+    Clock::get()
+        .map(|clock| order.expiration_ts > clock.unix_timestamp)
+        .unwrap_or(false)
+}
+
+fn signed_order_pair_shape_is_valid(
+    buyer_order: &SignedOrder,
+    seller_order: &SignedOrder,
+    quantity: u64,
+) -> bool {
+    quantity > 0
+        && buyer_order.version == 1
+        && seller_order.version == 1
+        && buyer_order.network == OrderNetwork::Localnet
+        && seller_order.network == OrderNetwork::Localnet
+        && buyer_order.side == OrderSide::Buy
+        && seller_order.side == OrderSide::Sell
+        && buyer_order.owner != seller_order.owner
+        && buyer_order.price_scaled <= SCALE
+        && seller_order.price_scaled <= SCALE
+        && buyer_order.quantity > 0
+        && seller_order.quantity > 0
+        && buyer_order.nonce > 0
+        && seller_order.nonce > 0
+        && quantity <= buyer_order.quantity
+        && quantity <= seller_order.quantity
+}
+
+fn signed_order_owner_signature_exists(
+    instructions_account: &AccountInfo,
+    order: &SignedOrder,
+) -> bool {
+    signed_order_signature_match(instructions_account, order, false)
+}
+
+fn signed_order_full_signature_exists(
+    instructions_account: &AccountInfo,
+    order: &SignedOrder,
+) -> bool {
+    signed_order_signature_match(instructions_account, order, true)
+}
+
+fn signed_order_signature_match(
+    instructions_account: &AccountInfo,
+    order: &SignedOrder,
+    require_message: bool,
+) -> bool {
+    let Ok(message) = encode_signed_order(order) else {
+        return false;
+    };
+    let Ok(current_index) = load_current_index_checked(instructions_account) else {
+        return false;
+    };
+
+    for index in 0..current_index {
+        let Ok(instruction) = load_instruction_at_checked(index as usize, instructions_account)
+        else {
+            return false;
+        };
+        if instruction.program_id != pubkey!("Ed25519SigVerify111111111111111111111111111") {
+            continue;
+        }
+        match ed25519_instruction_matches(&instruction.data, order.owner, &message) {
+            Ed25519Match::Full => return true,
+            Ed25519Match::OwnerOnly if !require_message => return true,
+            Ed25519Match::OwnerOnly | Ed25519Match::None => {}
+        }
+    }
+    false
+}
+
+enum Ed25519Match {
+    Full,
+    OwnerOnly,
+    None,
+}
+
+fn ed25519_instruction_matches(data: &[u8], owner: Pubkey, expected_message: &[u8]) -> Ed25519Match {
+    const ED25519_INSTRUCTION_HEADER_LEN: usize = 16;
+    const ED25519_CURRENT_INSTRUCTION: u16 = u16::MAX;
+
+    if data.len() < ED25519_INSTRUCTION_HEADER_LEN || data[0] != 1 {
+        return Ed25519Match::None;
+    }
+
+    let public_key_offset = u16::from_le_bytes([data[6], data[7]]) as usize;
+    let public_key_instruction_index = u16::from_le_bytes([data[8], data[9]]);
+    let message_offset = u16::from_le_bytes([data[10], data[11]]) as usize;
+    let message_size = u16::from_le_bytes([data[12], data[13]]) as usize;
+    let message_instruction_index = u16::from_le_bytes([data[14], data[15]]);
+
+    if public_key_instruction_index != ED25519_CURRENT_INSTRUCTION
+        || message_instruction_index != ED25519_CURRENT_INSTRUCTION
+    {
+        return Ed25519Match::None;
+    }
+
+    let Some(public_key_end) = public_key_offset.checked_add(32) else {
+        return Ed25519Match::None;
+    };
+    let Some(message_end) = message_offset.checked_add(message_size) else {
+        return Ed25519Match::None;
+    };
+    if public_key_end > data.len() || message_end > data.len() {
+        return Ed25519Match::None;
+    }
+    if &data[public_key_offset..public_key_end] != owner.as_ref() {
+        return Ed25519Match::None;
+    }
+    if &data[message_offset..message_end] == expected_message {
+        Ed25519Match::Full
+    } else {
+        Ed25519Match::OwnerOnly
+    }
+}
+
 #[error_code]
 pub enum VaultError {
     #[msg("Amount must be > 0")]
@@ -869,8 +1127,6 @@ pub enum VaultError {
     MarketMismatch,
     #[msg("Market is not in a tradable state")]
     MarketNotTradable,
-    #[msg("Backend signer is not authorized")]
-    UnauthorizedBackend,
     #[msg("Fill PDA nonce does not match the submitted order nonce")]
     FillNonceMismatch,
     #[msg("Invalid token mint")]
@@ -909,6 +1165,16 @@ pub enum VaultError {
     SignedOrderExpired,
     #[msg("Signed Order nonce is invalid")]
     InvalidSignedOrderNonce,
+    #[msg("Signed Order pair is invalid")]
+    InvalidSignedOrderPair,
+    #[msg("Signed Orders do not cross")]
+    SignedOrderNotCrossed,
+    #[msg("Signed Order signature verification instruction is missing")]
+    SignedOrderSignatureMissing,
+    #[msg("Signed Order signature verification instruction does not match")]
+    SignedOrderSignatureMismatch,
+    #[msg("Signed Order fill exceeds remaining quantity")]
+    SignedOrderOverfilled,
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -32,13 +32,11 @@ export interface OnchainSettlement {
 export type PositionSide = "long" | "short";
 
 export interface TradeExecutionInput {
-  marketId: string;
-  buyer: string | PublicKey;
-  seller: string | PublicKey;
-  buyerNonce?: bigint;
-  sellerNonce?: bigint;
-  quantity: number;
-  priceScaled: number;
+  buyerOrder: SignedOrderInput;
+  sellerOrder: SignedOrderInput;
+  quantity: bigint;
+  buyerSignatureInstructionIndex?: number;
+  sellerSignatureInstructionIndex?: number;
 }
 
 export interface SignedOrderInput {
