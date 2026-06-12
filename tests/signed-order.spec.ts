@@ -29,6 +29,9 @@ describe("signed order serialization", () => {
   it("encodes a fixed-layout signed order", () => {
     const encoded = encodeSignedOrder(order);
 
+    expect(encoded.toString("hex")).to.equal(
+      "114c494d455f5349474e45445f4f524445520102df4421411f64b1ded5fc312517a0166f46b4d061dc465f2eff3ffb6b01fffee59c8d0fd24c2c13fd7919f5d42d3fafba1b8948497d32ce1d1eb69dfcd5f1fd9e2a00000000000000000000000000000000000000000000000000000000000000000000000000000100e075090000000000404b4c000000000000d2496b00000000100f0e0d0c0b0a090807060504030201",
+    );
     expect(encoded.subarray(1, 1 + LIME_SIGNED_ORDER_DOMAIN.length).toString("utf8")).to.equal(
       LIME_SIGNED_ORDER_DOMAIN,
     );
